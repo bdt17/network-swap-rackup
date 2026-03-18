@@ -70,6 +70,4 @@ gem 'twilio-ruby'
 
 gem 'rack'
 gem 'rackup' 
-gem 'puma'
-gem 'rack-cors'
 gem 'rack-session'
