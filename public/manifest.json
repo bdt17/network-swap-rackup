@@ -1,0 +1,14 @@
+{
+  "name": "Thomas IT Network Ops",
+  "short_name": "Thomas IT",
+  "description": "DJI-PHX-179 + Network Inventory",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0984C0",
+  "theme_color": "#0984C0",
+  "icons": [{
+    "src": "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTkyIiBoZWlnaHQ9IjE5MiIgdmlld0JveD0iMCAwIDE5MiAxOTIiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxOTIiIGhlaWdodD0iMTkyIiBmaWxsPSIjMDk4NEMwIi8+Cjx0ZXh0IHg9IjM2IiB5PSIxMjAiIGZvbnQtZmFtaWx5PSJBcHRvcywgQXJpYWwiIGZvbnQtc2l6ZT0iNjQiIGZpbGw9IndoaXRlIj5USVQ8L3RleHQ+Cjwvc3ZnPgo=",
+    "sizes": "192x192",
+    "type": "image/svg+xml"
+  }]
+}

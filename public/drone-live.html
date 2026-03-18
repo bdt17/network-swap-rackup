@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>🦾 DJI Swarm Live - Phoenix DC21</title>
+  <script src="https://unpkg.com/@rails/actioncable@8.1.2/dist/umd/actioncable.esm.js"></script>
+  <style>
+    body { font-family: Arial; background: #1a202c; color: white; padding: 40px; }
+    .drone { background: linear-gradient(135deg, #10b981, #059669); padding: 30px; border-radius: 16px; margin: 20px 0; }
+    .issue { background: #ef4444; padding: 12px; border-radius: 8px; margin: 8px 0; }
+    button { background: #8b5cf6; color: white; padding: 20px 40px; font-size: 20px; border: none; border-radius: 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 3em;">🦾 DJI-PHX-179 Live Telemetry</h1>
+  <div id="fleet-status" class="drone">Connecting to Phoenix DC21 fleet...</div>
+  <div id="issues"></div>
+  <button onclick="launchSwarm()">🚀 Launch Inspection Swarm</button>
+
+  <script>
+    const cable = ActionCable.createConsumer('wss://network-swap-app.onrender.com/cable');
+    const channel = cable.subscriptions.create({channel: 'DroneChannel'}, {
+      received(data) {
+        document.getElementById('fleet-status').innerHTML = `
+          📍 ${data.drone_id}<br>
+          🔋 ${data.battery}% Battery<br>
+          ⏰ ${new Date(data.timestamp).toLocaleString()}
+        `;
+        if (data.issues) {
+          document.getElementById('issues').innerHTML = data.issues.map(i => 
+            `<div class="issue">⚠️ ${i}</div>`
+          ).join('');
+        }
+      }
+    });
+
+    async function launchSwarm() {
+      channel.perform('receive', {
+        drone_id: 'DJI-PHX-179',
+        battery: 87,
+        issues: ['loose RJ45 rack 3U', 'thermal alert switch B2']
+      });
+    }
+  </script>
+</body>
+</html>

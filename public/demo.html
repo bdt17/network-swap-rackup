@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><title>Thomas IT - Phoenix DC21 LIVE</title>
+<script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-gray-900 text-white p-12 max-w-4xl mx-auto">
+<h1 class="text-5xl font-bold mb-12">🦾 Thomas IT Network Swap</h1>
+<p class="text-2xl mb-12">Phoenix DC21 | DJI-PHX-179 87% | C9300 Rack3U</p>
+
+<button onclick="dispatch()" class="bg-emerald-500 hover:bg-emerald-600 text-white py-8 px-16 text-3xl font-bold rounded-2xl shadow-2xl">
+📱 DISPATCH SMITH,J.
+</button>
+<div id="result" class="mt-12 p-8 bg-gray-800 rounded-xl text-xl"></div>
+
+<script>
+async function dispatch() {
+  document.getElementById('result').innerHTML = '🚀 Dispatching...';
+  const r = await fetch('/api/dispatch_sms', {method: 'POST'});
+  const data = await r.json();
+  document.getElementById('result').innerHTML = `
+    ✅ ${data.message}<br>
+    🟢 ${data.device}<br>
+    📱 ${data.tech}<br>
+    💰 $500/mo LIVE
+  `;
+}
+</script>
+</body>
+</html>
