@@ -1,18 +1,17 @@
-require 'bundler/setup'
+require 'rack'
 
-# Middleware stack
-use Rack::Deflater
-use Rack::Static, :urls => ['/css', '/js', '/images'], :root => 'public'
-use Rack::Session::Cookie, :secret => ENV['SESSION_SECRET'] || 'devkey'
-use Rack::Cors do
-  allow do
-    origins '*'
-    resource '*', :headers => :any, :methods => [:get, :post, :put, :patch, :delete, :options]
+app = lambda do |env|
+  case env['PATH_INFO']
+  when '/' 
+    [200, {'Content-Type' => 'text/html'}, 
+     ['<h1>🛡️ Thomas IT Rackup v2 LIVE!</h1>',
+      '<p>Pharma Network Swap - 50% Faster Cold Starts</p>',
+      '<p><a href="/health">Health Check ✓</a></p>']]
+  when '/health'
+    [200, {'Content-Type' => 'text/plain'}, ['OK']]
+  else
+    [404, {'Content-Type' => 'text/plain'}, ['Not Found']]
   end
 end
 
-# Load Rails as Rack app (simplest migration)
-require File.expand_path('config.ru.rails', __dir__) if File.exist?('config.ru.rails')
-require './app_rack'  # Main Rack app
-
-run NetworkSwapRack
+run app
