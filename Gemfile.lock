@@ -448,6 +448,9 @@ DEPENDENCIES
   pg
   propshaft
   puma (>= 5.0)
+  rack
+  rack-session
+  rackup
   rails (~> 8.1.2)
   rubocop-rails-omakase
   selenium-webdriver
