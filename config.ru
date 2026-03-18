@@ -20,7 +20,8 @@ app = lambda do |env|
       '<div class="header">',
       '<h1>🚁 <span style="color:#00ff88">Thomas IT</span> Drone Fleet</h1>',
       '<p>Real-time GPS · Pharma Cold Chain · 21 CFR Part 11</p>',
-      '</div>',
+      '</div>'
+    ].concat([
       '<div class="drone-grid">',
       '<div class="drone-card">',
       '<h3>DRONE-001 <span class="status-online">● LIVE</span></h3>',
@@ -33,29 +34,25 @@ app = lambda do |env|
       '<p>Last ping: 14min ago</p>',
       '<p class="coords">33.6846° N, 112.1240° W (Glendale)</p>',
       '<p>Temp: 1.8°C | Status: Vaccine Route</p>',
-      '</div>',
-      '</div>',
-      '<script>',
-      'setInterval(() => {',
-      '  document.getElementById("ping1").textContent = new Date().toLocaleTimeString();',
-      '}, 1000);',
-      '</script>',
+      '</div></div>',
+      '<script>setInterval(() => {document.getElementById("ping1").textContent = new Date().toLocaleTimeString();}, 1000);</script>',
       '</body></html>'
     ]]
-    
+
   when '/health', '/status'
-    [200, {'Content-Type' => 'application/json'}, ['{"status":"healthy","drones":2,"live":1}']]
+    [200, {'Content-Type' => 'application/json'}, [JSON.generate({"status":"healthy","drones":2,"live":1})]]
     
   when '/drones'
-    [200, {'Content-Type' => 'application/json'}, [{
-      'drones': [
-        {'id': 'DRONE-001', 'lat': 33.4484, 'lng': -112.0740, 'status': 'live', 'temp': 2.3, 'payload': 'insulin'},
-        {'id': 'DRONE-002', 'lat': 33.6846, 'lng': -112.1240, 'status': 'offline', 'temp': 1.8, 'payload': 'vaccine'}
+    drones = {
+      "drones": [
+        {"id": "DRONE-001", "lat": 33.4484, "lng": -112.0740, "status": "live", "temp": 2.3, "payload": "insulin"},
+        {"id": "DRONE-002", "lat": 33.6846, "lng": -112.1240, "status": "offline", "temp": 1.8, "payload": "vaccine"}
       ]
-    }.to_json]]
+    }
+    [200, {'Content-Type' => 'application/json'}, [JSON.generate(drones)]]
     
   else
-    [404, {'Content-Type' => 'text/plain'}, ['Drone control only']]
+    [404, {'Content-Type' => 'text/plain'}, ['Not Found']]
   end
 end
 
