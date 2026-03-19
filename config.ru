@@ -260,3 +260,11 @@ end
 
 # Force WEBrick so Rack never tries to load Puma. [web:13][web:15]
 Rack::Handler::WEBrick.run(app, Port: ENV.fetch('PORT', 3000).to_i)
+
+if __FILE__ == $0
+  Rack::Handler::WEBrick.run(
+    self, 
+    Port: ENV.fetch('PORT', 3000).to_i,
+    Host: '0.0.0.0'
+  )
+end
