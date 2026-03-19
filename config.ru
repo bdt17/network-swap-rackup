@@ -3,70 +3,15 @@ require 'rack'
 app = lambda do |env|
   case env['PATH_INFO']
   when '/'
-    [200, {'Content-Type' => 'text/html; charset=utf-8'}, [
-      '<!DOCTYPE html>',
-      '<html><head>',
-      '<title>Thomas IT Drone Control v2</title>',
-      '<meta name="viewport" content="width=device-width">',
-      '<style>',
-      'body{font-family:"Courier New",monospace;background:linear-gradient(135deg,#0a0a0a,#1a1a2e);color:#00ff88;margin:0;padding:20px;min-height:100vh}',
-      '.header{background:linear-gradient(90deg,rgba(0,255,136,0.1),rgba(0,255,136,0.05));backdrop-filter:blur(10px);padding:30px;border:1px solid rgba(0,255,136,0.3);border-radius:15px;margin-bottom:30px;box-shadow:0 8px 32px rgba(0,255,136,0.1)}',
-      '.header h1{font-size:2.5em;margin:0;text-shadow:0 0 20px #00ff88;font-weight:700}',
-      '.nav{display:flex;gap:20px;flex-wrap:wrap;margin-top:20px}',
-      '.nav a{color:#00ff88;text-decoration:none;padding:10px 20px;border:1px solid rgba(0,255,136,0.3);border-radius:25px;background:rgba(0,255,136,0.05);transition:all 0.3s}',
-      '.nav a:hover{background:rgba(0,255,136,0.2);box-shadow:0 0 20px rgba(0,255,136,0.5);transform:translateY(-2px)}',
-      '.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:30px}',
-      '.card{background:linear-gradient(145deg,rgba(0,20,40,0.9),rgba(0,10,20,0.9));backdrop-filter:blur(10px);padding:25px;border:1px solid rgba(0,255,136,0.4);border-radius:15px;box-shadow:0 10px 40px rgba(0,255,136,0.1)}',
-      '.card h3{margin:0 0 15px 0;font-size:1.3em;color:#00ff88;text-shadow:0 0 10px #00ff88}',
-      '.metric{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(0,255,136,0.2);font-size:1.1em}',
-      '.metric:last-child{border-bottom:none}',
-      '.live{animation:pulse 2s infinite}',
-      '@keyframes pulse{0%,100%{text-shadow:0 0 5px #00ff88}50%{text-shadow:0 0 20px #00ff88,0 0 40px #00ff88}}',
-      '@media (max-width:768px){.header h1{font-size:2em;padding:20px 10px}.nav{flex-direction:column;align-items:center}}',
-      '</style>',
-      '</head><body>',
-      '<div class="header">',
-      '<h1>🚁 <span class="live">Thomas IT</span> Drone Fleet</h1>',
-      '<p>Real-time GPS Tracking · Pharma Cold Chain · 21 CFR Part 11 Compliant</p>',
-      '<div class="nav">',
-      '<a href="/health">🩺 Health Check</a>',
-      '<a href="/drones">🛰️ Drones API</a>',
-      '<a href="/shipments">📦 Shipments</a>',
-      '</div>',
-      '</div>',
-      '<div class="status-grid">',
-      '<div class="card">',
-      '<h3>🚁 Fleet Status</h3>',
-      '<div class="metric"><span>Active Drones:</span><span class="live">2</span></div>',
-      '<div class="metric"><span>Live Tracking:</span><span class="live">1</span></div>',
-      '<div class="metric"><span>Cold Chain:</span><span>100% ✓</span></div>',
-      '</div>',
-      '<div class="card">',
-      '<h3>📦 Pharma Operations</h3>',
-      '<div class="metric"><span>Total Shipments:</span><span>47</span></div>',
-      '<div class="metric"><span>Pending:</span><span>12</span></div>',
-      '<div class="metric"><span>Delivered:</span><span>35</span></div>',
-      '</div>',
-      '<div class="card">',
-      '<h3>📍 Live Positions</h3>',
-      '<div class="metric"><span>DRONE-001:</span><span>33.4484°N, 112.0740°W</span></div>',
-      '<div class="metric"><span>DRONE-002:</span><span>33.6846°N, 112.1240°W</span></div>',
-      '<div class="metric"><span>Last Ping:</span><span id="ping"></span></div>',
-      '</div>',
-      '</div>',
-      '<script>',
-      'setInterval(()=>{document.getElementById("ping").textContent=new Date().toLocaleTimeString()},1000);',
-      '</script>',
-      '</body></html>'
-    ]]
+    [200, {'Content-Type' => 'text/html; charset=utf-8'}, ['<!DOCTYPE html><html><head><title>Thomas IT Drone Control</title><meta name="viewport" content="width=device-width"><style>body{font-family:"Courier New",monospace;background:linear-gradient(135deg,#0a0a0a,#1a1a2e);color:#00ff88;margin:0;padding:20px;min-height:100vh}.header{background:linear-gradient(90deg,rgba(0,255,136,0.1),rgba(0,255,136,0.05));backdrop-filter:blur(10px);padding:30px;border:1px solid rgba(0,255,136,0.3);border-radius:15px;margin-bottom:30px;box-shadow:0 8px 32px rgba(0,255,136,0.1)}.header h1{font-size:2.5em;margin:0 0 10px 0;text-shadow:0 0 20px #00ff88;font-weight:700}.nav{display:flex;gap:20px;flex-wrap:wrap;margin-top:20px}.nav a{color:#00ff88;text-decoration:none;padding:12px 24px;border:1px solid rgba(0,255,136,0.3);border-radius:25px;background:rgba(0,255,136,0.05);transition:all 0.3s;font-weight:500}.nav a:hover{background:rgba(0,255,136,0.2);box-shadow:0 0 20px rgba(0,255,136,0.5);transform:translateY(-2px)}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:30px}.card{background:linear-gradient(145deg,rgba(0,20,40,0.9),rgba(0,10,20,0.9));backdrop-filter:blur(10px);padding:25px;border:1px solid rgba(0,255,136,0.4);border-radius:15px;box-shadow:0 10px 40px rgba(0,255,136,0.1)}.card h3{margin:0 0 20px 0;font-size:1.4em;color:#00ff88;text-shadow:0 0 10px #00ff88}.metric{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid rgba(0,255,136,0.2);font-size:1.1em}.metric:last-child{border-bottom:none}.live{animation:pulse 2s infinite;color:#00ff88}@keyframes pulse{0%,100%{text-shadow:0 0 5px #00ff88}50%{text-shadow:0 0 20px #00ff88,0 0 40px #00ff88}}@media (max-width:768px){.header h1{font-size:2em}.nav{flex-direction:column;align-items:center}}</style></head><body><div class="header"><h1>🚁 <span class="live">Thomas IT</span> Drone Fleet</h1><p>Real-time GPS · Pharma Cold Chain · 21 CFR Part 11</p><div class="nav"><a href="/health">🩺 Health</a><a href="/drones">🛰️ Drones</a><a href="/shipments">📦 Shipments</a></div></div><div class="status-grid"><div class="card"><h3>🚁 Fleet Status</h3><div class="metric"><span>Active:</span><span class="live">2</span></div><div class="metric"><span>Live:</span><span class="live">1</span></div><div class="metric"><span>Cold Chain:</span><span>100%</span></div></div><div class="card"><h3>📦 Operations</h3><div class="metric"><span>Total:</span><span>47</span></div><div class="metric"><span>Pending:</span><span>12</span></div><div class="metric"><span>Delivered:</span><span>35</span></div></div><div class="card"><h3>📍 Positions</h3><div class="metric"><span>DRONE-001:</span><span>PHX Sky Harbor</span></div><div class="metric"><span>DRONE-002:</span><span>Glendale</span></div><div class="metric"><span>Ping:</span><span id="ping"></span></div></div></div><script>setInterval(()=>{document.getElementById("ping").textContent=new Date().toLocaleTimeString()},1000);</script></body></html>']]
   when '/health'
-    [200, {'Content-Type' => 'application/json'}, ['{"status":"healthy","uptime":"100%","drones":2,"shipments":47}']]
+    [200, {'Content-Type' => 'application/json'}, ['{"status":"healthy","service":"live","uptime":"100%","drones":2}']]
   when '/drones'
-    [200, {'Content-Type' => 'application/json'}, ['{"drones":[{"id":"DRONE-001","lat":33.4484,"lng":-112.0740,"status":"live","payload":"insulin","battery":87},{"id":"DRONE-002","lat":33.6846,"lng":-112.1240,"status":"offline","payload":"vaccine","battery":23}]}']]
+    [200, {'Content-Type' => 'application/json'}, ['{"drones":[{"id":"DRONE-001","status":"live","lat":33.4484,"lng":-112.0740,"payload":"insulin","battery":87},{"id":"DRONE-002","status":"offline","lat":33.6846,"lng":-112.1240,"payload":"vaccine","battery":23}]}']]
   when '/shipments'
     [200, {'Content-Type' => 'application/json'}, ['{"total":47,"pending":12,"delivered":35,"failed":0}']]
   else
-    [404, {'Content-Type' => 'text/plain'}, ['Drone HQ - Not Found']]
+    [404, {'Content-Type' => 'text/plain'}, ['Drone HQ']]
   end
 end
 
