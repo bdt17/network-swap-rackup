@@ -2,9 +2,8 @@ GEM
   remote: https://rubygems.org/
   specs:
     nio4r (2.7.5)
-    pg (1.6.3)
     pg (1.6.3-x86_64-linux)
-    puma (6.6.1)
+    puma (7.2.0)
       nio4r (~> 2.0)
     rack (3.2.5)
     rackup (2.3.1)
@@ -12,24 +11,22 @@ GEM
     stripe (18.4.2)
 
 PLATFORMS
-  ruby
   x86_64-linux
 
 DEPENDENCIES
-  pg
+  pg (~> 1.5)
   puma
   rack (~> 3.0)
   rackup
   stripe
 
 CHECKSUMS
-  nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
-  pg (1.6.3) sha256=1388d0563e13d2758c1089e35e973a3249e955c659592d10e5b77c468f628a99
-  pg (1.6.3-x86_64-linux) sha256=5d9e188c8f7a0295d162b7b88a768d8452a899977d44f3274d1946d67920ae8d
-  puma (6.6.1) sha256=b9b56e4a4ea75d1bfa6d9e1972ee2c9f43d0883f011826d914e8e37b3694ea1e
-  rack (3.2.5) sha256=4cbd0974c0b79f7a139b4812004a62e4c60b145cba76422e288ee670601ed6d3
-  rackup (2.3.1) sha256=6c79c26753778e90983761d677a48937ee3192b3ffef6bc963c0950f94688868
-  stripe (18.4.2) sha256=fd08a73ab87fc0b0ad938ca71293e1051e593001b70de5e9fcf12d1097133831
+  nio4r (2.7.5)
+  pg (1.6.3-x86_64-linux)
+  puma (7.2.0)
+  rack (3.2.5)
+  rackup (2.3.1)
+  stripe (18.4.2)
 
 RUBY VERSION
   ruby 3.2.3
