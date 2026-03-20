@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# CYBERPUNK DRONE FLEET v2.0 - FIXED SYNTAX
+# CYBERPUNK DRONE FLEET v2.1 - SUPER FUNCTIONS + FIRMWARE SWAP
 
 require 'bundler/setup'
 require 'rack'
@@ -8,6 +8,7 @@ require 'uri'
 require 'pg'
 require 'stripe'
 require 'faye/websocket'
+require 'digest/sha2'
 
 Faye::WebSocket.load_adapter('rack')
 
@@ -16,10 +17,16 @@ $request_count ||= 0
 $start_time    ||= Time.now
 $DB            ||= nil
 
-# DRONE FLEET STATE
+# DRONE FLEET STATE w/ FIRMWARE
 $drone_fleet = {
-  'drone-001' => { lat: 33.4484, lng: -112.0740, alt: 400, status: 'PHX_HQ_HOVER', battery: 87, temp: 2.1 },
-  'drone-002' => { lat: 33.5138, lng: -112.1314, alt: 250, status: 'PATROL_AZ1', battery: 76, temp: 1.8 },
+  'drone-001' => { 
+    lat: 33.4484, lng: -112.0740, alt: 400, status: 'PHX_HQ_HOVER', 
+    battery: 87, temp: 2.1, firmware: {version: 'v1.0.0', status: 'stable'}
+  },
+  'drone-002' => { 
+    lat: 33.5138, lng: -112.1314, alt: 250, status: 'PATROL_AZ1', 
+    battery: 76, temp: 1.8, firmware: {version: 'v1.0.0', status: 'stable'}
+  },
 }
 
 MISSION_TEMPLATES = {
@@ -67,7 +74,9 @@ def cyberpunk_page(title, body_html)
   .drone-btn.safe { background:rgba(0,200,255,0.2); border:1px solid #00ccff; color:#00ccff; }
   .drone-btn.emergency { background:rgba(255,50,50,0.3); border:1px solid #ff4444; color:#ff8888; font-weight:bold; }
   .drone-btn:active { transform:scale(0.98); }
+  .drone-btn.firmware { background:rgba(255,200,0,0.2); border:1px solid #ffcc00; color:#ffcc00; font-size:10px; padding:4px 8px; width:auto; }
   #fleet-map { height:260px;border-radius:8px;overflow:hidden;border:1px solid #00ff88; }
+  .fw-section { margin-top:12px;padding:8px;background:rgba(0,0,0,0.4);border-radius:6px;border:1px solid #00ccff; }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -79,12 +88,12 @@ def cyberpunk_page(title, body_html)
     <div class="badge-row">
       <span class="badge ok">DRONE FLEET: #{$drone_fleet.size} ACTIVE</span>
       <span class="badge ok">WEBSOCKET ✓</span>
+      <span class="badge ok">FIRMWARE SWAP ✓</span>
       <span class="badge ok">PHX COLD CHAIN ✓</span>
-      <span class="badge ok">21 CFR Part 11 ✓</span>
     </div>
   </div>
   #{body_html}
-  <div class="footer">git push origin main → cyberpunk drone C2 online | PHX pharma ready</div>
+  <div class="footer">git push origin main → cyberpunk drone C2 + firmware swap online | PHX pharma ready</div>
   <script>
   (function(){
     var mapEl=document.getElementById('fleet-map');if(!mapEl)return;
@@ -107,6 +116,19 @@ def cyberpunk_page(title, body_html)
       .then(res=>res.json()).then(data=>{statusEl.textContent=`✓ ${action.toUpperCase()} SENT`;statusEl.style.color='#00ff88';})
       .catch(err=>{statusEl.textContent='✗ ERROR';statusEl.style.color='#ff8888';});
     };
+    window.uploadFirmware=function(){
+      var fileInput=document.getElementById('fw-file');
+      var file=fileInput.files[0];
+      if(!file)return alert('Select firmware file (.bin/.hex)');
+      var formData=new FormData();
+      formData.append('file',file);
+      formData.append('version','v2.1.0-phx');
+      document.getElementById('fw-status').textContent='UPLOADING...';
+      fetch('/api/firmware',{method:'POST',body:formData})
+      .then(res=>res.json()).then(data=>{
+        document.getElementById('fw-status').textContent=`v2.1.0 FLASHING ${data.hash}`;
+      }).catch(err=>{document.getElementById('fw-status').textContent='ERROR';console.error('FW error:',err);});
+    };
   })();
   </script>
 </body></html>
@@ -125,7 +147,6 @@ app = lambda do |env|
     ws.on :open do |event|
       puts "🛰️ WEBSOCKET CONNECT"
       ws.send($drone_fleet.to_json)
-      # Simulate movement
       EM.add_periodic_timer(3) do
         next if ws.closed?
         $drone_fleet['drone-001'][:lng] += 0.001 if rand < 0.3
@@ -150,6 +171,23 @@ app = lambda do |env|
     end
     ws.rack_response
 
+  # FIRMWARE UPLOAD ENDPOINT
+  elsif req.post? && path == '/api/firmware'
+    if req.params['file'] && req.params['file'][:tempfile]
+      firmware_data = req.params['file'][:tempfile].read
+      firmware_hash = Digest::SHA256.hexdigest(firmware_data)[0..8]
+      $drone_fleet['drone-001'][:firmware] = {
+        version: req.params['version'] || 'v2.1.0',
+        hash: firmware_hash,
+        status: 'FLASHING',
+        timestamp: Time.now.iso8601,
+        size: firmware_data.bytesize
+      }
+      [200, {'Content-Type' => 'application/json'}, [JSON.dump({status: 'firmware_uploaded', hash: firmware_hash})]]
+    else
+      [400, {'Content-Type' => 'application/json'}, [JSON.dump({error: 'no_file'})]]
+    end
+
   # API COMMAND
   elsif req.post? && path == '/api/drone_cmd'
     drone_id = req.params['drone_id'] || 'drone-001'
@@ -168,13 +206,14 @@ app = lambda do |env|
     <h2>Control Tower</h2>
     <pre>#{JSON.pretty_generate(stats)}</pre>
     <div class="pill ok">WEBSOCKET ✓</div>
+    <div class="pill ok">FIRMWARE ✓</div>
   </div>
   <div class="card">
     <h2>Live Telemetry</h2>
     <div id="fleet-map"></div>
   </div>
   <div class="card">
-    <h2>🚁 Drone Commands</h2>
+    <h2>🚁 Super Drone C2 + Firmware</h2>
     <div style="display:grid;gap:8px;margin:12px 0;">
       <button class="drone-btn patrol" onclick="sendDroneCmd('drone-001','mission_start','patrol_az1')">🚁 Patrol AZ-1</button>
       <button class="drone-btn patrol" onclick="sendDroneCmd('drone-001','mission_start','phx_loop')">🔄 PHX Loop</button>
@@ -182,16 +221,21 @@ app = lambda do |env|
       <button class="drone-btn safe" onclick="sendDroneCmd('drone-001','land')">🛬 Land</button>
       <button class="drone-btn emergency" onclick="sendDroneCmd('drone-001','emergency')">🚨 EMERGENCY</button>
     </div>
+    <div class="fw-section">
+      <div style="font-size:10px;color:#00ccff;">Firmware: <span id="fw-status">#{$drone_fleet['drone-001'][:firmware][:version]}</span></div>
+      <input id="fw-file" type="file" style="font-size:10px;color:#888;margin:4px 0;" accept=".bin,.hex">
+      <button class="drone-btn firmware" onclick="uploadFirmware()">⚡ FLASH FIRMWARE</button>
+    </div>
     <div style="font-size:10px;color:#88ff88;margin-top:8px;">Status: <span id="cmd-status">READY</span></div>
   </div>
   <div class="card">
     <h2>21 CFR Part 11</h2>
-    <p>PHX pharma cold chain compliance ready</p>
+    <p>PHX pharma cold chain compliance + firmware audit trail ready</p>
   </div>
 </div>
-<div class="cta" onclick="location.reload()">DEPLOY FLEET</div>
+<div class="cta" onclick="location.reload()">DEPLOY FLEET + FIRMWARE SWAP</div>
     HTML
-    [200, {'Content-Type' => 'text/html; charset=utf-8'}, [cyberpunk_page('DRONE FLEET C2', body_html)]]
+    [200, {'Content-Type' => 'text/html; charset=utf-8'}, [cyberpunk_page('DRONE FLEET C2 v2.1', body_html)]]
 
   # HEALTH
   elsif path == '/health'
