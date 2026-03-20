@@ -1,5 +1,7 @@
 # config.ru
+require 'bundler/setup'
 require 'rack'
+require 'rack/handler'
 require 'json'
 require 'uri'
 require 'pg'
@@ -257,14 +259,23 @@ app = Proc.new do |env|
     [404, { 'Content-Type' => 'text/plain' }, ["404 – Drone corridor not mapped\n"]]
   end
 end
+end # end of app Proc
 
-# Force WEBrick so Rack never tries to load Puma. [web:13][web:15]
-Rack::Handler::WEBrick.run(app, Port: ENV.fetch('PORT', 3000).to_i)
+# Define app as Rack app (rackup-compatible)
+app = app  # This references the Proc above
 
+# Only run server when executed directly (bundle exec ruby config.ru)
 if __FILE__ == $0
+  require 'rack/handler/webrick'  # CRITICAL: explicit require
+  
   Rack::Handler::WEBrick.run(
-    self, 
-    Port: ENV.fetch('PORT', 3000).to_i,
-    Host: '0.0.0.0'
+    app,
+    Host: '0.0.0.0',                    # Render requires this
+    Port: ENV.fetch('PORT', 3000).to_i, # Render assigns this
+    Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN),  # Render expects logs
+    AccessLog: []                       # Disable access logs for clean Render logs
   )
+else
+  # For rackup compatibility (not used by Render)
+  run app
 end
