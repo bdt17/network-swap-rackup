@@ -7,8 +7,5 @@ gem 'webrick'  # NO NIO4R! Clean server
 gem 'pg', '~> 1.5'
 gem 'stripe'
 gem 'faye-websocket'
-gem 'faye-websocket'
-gem 'redis'
-gem 'faye-websocket'
 gem 'redis'
 gem 'digest-sha2'
