@@ -1,11 +1,10 @@
-# config.ru
 require 'bundler/setup'
 require 'rack'
-require 'rack/handler'
 require 'json'
 require 'uri'
 require 'pg'
 require 'stripe'
+require 'webrick'
 
 Stripe.api_key = ENV['STRIPE_SECRET_KEY'] || ENV['IPE_SECRET_KEY'] || 'sk_test_dummy'
 
@@ -13,7 +12,7 @@ $request_count ||= 0
 $start_time    ||= Time.now
 $DB            ||= nil
 
-# DATABASE_URL from Render (internal); let pg handle SSL from the URL. [web:2][web:8]
+# DB via DATABASE_URL (Render internal)
 begin
   if ENV['DATABASE_URL'] && !ENV['DATABASE_URL'].empty?
     $DB = PG.connect(ENV['DATABASE_URL'])
@@ -195,7 +194,8 @@ def cyberpunk_page(title, body_html)
   HTML
 end
 
-app = Proc.new do |env|
+# Rack app
+app = lambda do |env|
   req  = Rack::Request.new(env)
   path = req.path_info
 
@@ -244,7 +244,7 @@ app = Proc.new do |env|
       <div class="cta">JUST PUSH → CYBERPUNK DRONE FLEET LIVE WORLDWIDE</div>
     HTML
 
-    [200, { 'Content-Type' => 'text/html; charset=utf-8' }, [cyberpunk_page('THOMAS IT · DRONE HQ', body_html)]]
+    [200, { 'content-type' => 'text/html; charset=utf-8' }, [cyberpunk_page('THOMAS IT · DRONE HQ', body_html)]]
 
   when '/health'
     status = {
@@ -253,29 +253,12 @@ app = Proc.new do |env|
       uptime_s: uptime,
       db: !!$DB
     }
-    [200, { 'Content-Type' => 'application/json' }, [JSON.dump(status)]]
+    [200, { 'content-type' => 'application/json' }, [JSON.dump(status)]]
 
   else
-    [404, { 'Content-Type' => 'text/plain' }, ["404 – Drone corridor not mapped\n"]]
+    [404, { 'content-type' => 'text/plain' }, ["404 – Drone corridor not mapped\n"]]
   end
 end
-end # end of app Proc
 
-# Define app as Rack app (rackup-compatible)
-app = app  # This references the Proc above
-
-# Only run server when executed directly (bundle exec ruby config.ru)
-if __FILE__ == $0
-  require 'rack/handler/webrick'  # CRITICAL: explicit require
-  
-  Rack::Handler::WEBrick.run(
-    app,
-    Host: '0.0.0.0',                    # Render requires this
-    Port: ENV.fetch('PORT', 3000).to_i, # Render assigns this
-    Logger: WEBrick::Log.new($stderr, WEBrick::Log::WARN),  # Render expects logs
-    AccessLog: []                       # Disable access logs for clean Render logs
-  )
-else
-  # For rackup compatibility (not used by Render)
-  run app
-end
+# LAST LINE: standard rackup entrypoint
+run app
