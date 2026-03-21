@@ -148,7 +148,7 @@ app = lambda do |env|
       puts "🛰️ WEBSOCKET CONNECT"
       ws.send($drone_fleet.to_json)
       EM.add_periodic_timer(3) do
-        next if ws.closed?
+        next if ws.closed
         $drone_fleet['drone-001'][:lng] += 0.001 if rand < 0.3
         $drone_fleet['drone-001'][:battery] -= 0.1
         ws.send($drone_fleet.to_json)
