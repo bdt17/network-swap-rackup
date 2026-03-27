@@ -151,7 +151,7 @@ app = lambda do |env|
       ws.send($drone_fleet.to_json)
 
       EM.add_periodic_timer(3) do
-        next unless ws && ws.open?
+        next unless ws && ws.instance_variable_get(:@ready_state) == 1
         $drone_fleet['drone-001'][:lng] += 0.001 if rand < 0.3
         $drone_fleet['drone-001'][:battery] -= 0.1
         ws.send($drone_fleet.to_json)
@@ -168,7 +168,6 @@ app = lambda do |env|
         when 'land';        $drone_fleet[drone_id][:status] = 'LANDING'
         when 'emergency';   $drone_fleet[drone_id][:status] = 'EMERGENCY'
         end
-
         ws.send({status: 'cmd_ok', drone_id: drone_id}.to_json)
       rescue => e
         ws.send({error: e.message}.to_json)
@@ -177,7 +176,6 @@ app = lambda do |env|
 
     ws.on :close do |event|
       puts "🛰️ WEBSOCKET CLOSED"
-      # No ws.closed? check; it doesn't exist on Faye::WebSocket
     end
 
     ws.on :error do |event|
@@ -195,7 +193,7 @@ app = lambda do |env|
 
       $drone_fleet['drone-001'][:firmware] = {
         version: upload[:filename].match(/v(\d+\.\d+\.\d+)/) ? upload[:filename] : 'v2.1.0',
-        hash: firmware_hash,
+        hash:  firmware_hash,
         status: 'FLASHING',
         timestamp: Time.now.iso8601,
         size: firmware_data.bytesize
@@ -209,7 +207,7 @@ app = lambda do |env|
   # API COMMAND
   elsif req.post? && path == '/api/drone_cmd'
     drone_id = req.params['drone_id'] || 'drone-001'
-    action   = req.params['action'] || 'unknown'
+    action   = req.params['action']   || 'unknown'
 
     if $drone_fleet[drone_id]
       case action
@@ -266,9 +264,11 @@ app = lambda do |env|
   </div>
 </div>
 <div class="cta" onclick="location.reload()">DEPLOY FLEET + FIRMWARE SWAP</div>
-    HTML
+HTML
 
-    [200, {'content-type' => 'text/html; charset=utf-8'}, [cyberpunk_page('DRONE FLEET C2 v2.1', body_html)]]
+    [200, {'content-type' => 'text/html; charset=utf-8'}, [cyberpunk_page('DRONE FLEET C2 v2.1',
+    body_html)]]
+  end
 
   # HEALTH
   elsif path == '/health'
@@ -280,9 +280,6 @@ app = lambda do |env|
 end
 
 run app
-
-
-
 
 
 
