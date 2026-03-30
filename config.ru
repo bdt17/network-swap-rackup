@@ -1,30 +1,25 @@
 #!/usr/bin/env ruby
-# CYBERPUNK DRONE FLEET v2.1 - SUPER FUNCTIONS + FIRMWARE SWAP
+# frozen_string_literal: true
 
-require 'bundler/setup'
-require 'stripe'                  # ← load Stripe before using Stripe.api_key
 require 'rack'
-require 'json'
-require 'uri'
-require 'pg'
-require 'eventmachine'
+require 'rack/contrib'
 require 'faye/websocket'
-require 'digest/sha2'
+require 'json'
+require 'pg'
+require 'securerandom'
+require 'digest'
 require 'time'
 
-Faye::WebSocket.load_adapter('rack')
+# Global state
+$start_time = Time.now
+$request_count = 0
+$timers = {}  # Track timers per WS connection
 
-Stripe.api_key = ENV['STRIPE_SECRET_KEY'] || ENV['IPE_SECRET_KEY'] || 'sk_test_dummy'
-
-$request_count ||= 0
-$start_time    ||= Time.now
-$DB            ||= nil
-
-# DRONE FLEET STATE w/ FIRMWARE
+# Mock drone fleet data (Phoenix AZ pharma logistics)
 $drone_fleet = {
   'drone-001' => {
-    lat: 33.4484, lng: -112.0740, alt: 400, status: 'PHX_HQ_HOVER',
-    battery: 87, temp: 2.1, firmware: {version: 'v1.0.0', status: 'stable'}
+    lat: 33.4484, lng: -112.0740, alt: 400, status: 'READY',
+    battery: 87.0, temp: 2.1, firmware: {version: 'v1.0.0', status: 'stable'}
   },
   'drone-002' => {
     lat: 33.5138, lng: -112.1314, alt: 250, status: 'PATROL_AZ1',
@@ -98,6 +93,21 @@ def cyberpunk_page(title, body_html)
   #{body_html}
   <div class="footer">git push origin main → cyberpunk drone C2 + firmware swap online | PHX pharma ready</div>
   <script>
+  function sendDroneCmd(droneId, action, mission) {
+    fetch('/api/drone_cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `drone_id=${droneId}&action=${action}${mission ? '&mission=' + mission : ''}`
+    }).then(r=>r.json()).then(data=>console.log('CMD:', data));
+  }
+  function uploadFirmware() {
+    var file = document.getElementById('fw-file').files[0];
+    if (!file) return alert('Select firmware file');
+    var form = new FormData();
+    form.append('file', file);
+    fetch('/api/firmware', {method: 'POST', body: form})
+      .then(r=>r.json()).then(data=>console.log('FW:', data));
+  }
   (function(){
     var mapEl = document.getElementById('fleet-map');
     if (!mapEl) return;
@@ -122,12 +132,8 @@ def cyberpunk_page(title, body_html)
           }
         } catch(e) { console.log('WS parse err:', e); }
       };
-      socket.onopen = function(ev) {
-        console.log('WS CONNECTED');
-      };
-      socket.onclose = function(ev) {
-        console.log('WS CLOSED');
-      };
+      socket.onopen = function(ev) { console.log('WS CONNECTED'); };
+      socket.onclose = function(ev) { console.log('WS CLOSED'); };
     } catch(e) { console.log('WS CONNECT ERR:', e); }
   })();
   </script>
@@ -142,22 +148,26 @@ app = lambda do |env|
   $request_count += 1
   uptime = (Time.now - $start_time).round(1)
 
-  # WEBSOCKET
+  # WEBSOCKET - FIXED: Proper timer cleanup
   if path == '/ws/drone' && Faye::WebSocket.websocket?(env)
     ws = Faye::WebSocket.new(env)
+    ws_id = SecureRandom.hex(8)
+    $timers[ws_id] = nil
 
     ws.on :open do |event|
-      puts "🛰️ WEBSOCKET CONNECT"
+      puts "🛰️ WEBSOCKET CONNECT #{ws_id}"
       ws.send($drone_fleet.to_json)
 
-      EM.add_periodic_timer(3) do
+      # FIXED: Store timer reference and check WS state
+      $timers[ws_id] = EM.add_periodic_timer(3) do
         next unless ws && ws.instance_variable_get(:@ready_state) == 1
+        next unless $timers[ws_id]
+        
         drone = $drone_fleet['drone-001']
-        drone[:lng]     = (drone[:lng]     || 33.4484) + 0.001
-        drone[:lat]     = (drone[:lat]     || 33.4484)
-        drone[:alt]     = (drone[:alt]     || 400)     + 0
-        drone[:battery] = (drone[:battery] || 87.0)    - 0.1
-        drone[:battery] = [drone[:battery], 0.0].max   # clamp to 0
+        drone[:lng]     = (drone[:lng] || -112.0740) + 0.001
+        drone[:lat]     = (drone[:lat] || 33.4484)
+        drone[:alt]     = (drone[:alt] || 400)
+        drone[:battery] = [(drone[:battery] || 87.0) - 0.1, 0.0].max
 
         ws.send($drone_fleet.to_json)
       end
@@ -169,9 +179,9 @@ app = lambda do |env|
         drone_id = cmd['drone_id'] || 'drone-001'
         case cmd['action']
         when 'mission_start'; $drone_fleet[drone_id][:status] = 'MISSION_ACTIVE'
-        when 'rtl';         $drone_fleet[drone_id][:status] = 'RTL_PHX_HQ'
-        when 'land';        $drone_fleet[drone_id][:status] = 'LANDING'
-        when 'emergency';   $drone_fleet[drone_id][:status] = 'EMERGENCY'
+        when 'rtl';           $drone_fleet[drone_id][:status] = 'RTL_PHX_HQ'
+        when 'land';          $drone_fleet[drone_id][:status] = 'LANDING'
+        when 'emergency';     $drone_fleet[drone_id][:status] = 'EMERGENCY'
         end
         ws.send({status: 'cmd_ok', drone_id: drone_id}.to_json)
       rescue => e
@@ -180,25 +190,38 @@ app = lambda do |env|
     end
 
     ws.on :close do |event|
-      puts "🛰️ WEBSOCKET CLOSED"
+      puts "🛰️ WEBSOCKET CLOSED #{ws_id}"
+      # FIXED: Clean up timer
+      if $timers[ws_id]
+        EM.delete_periodic_timer($timers[ws_id])
+        $timers.delete(ws_id)
+      end
     end
 
     ws.on :error do |event|
       puts "🛰️ WEBSOCKET ERROR: #{event.message}"
+      if $timers[ws_id]
+        EM.delete_periodic_timer($timers[ws_id])
+        $timers.delete(ws_id)
+      end
     end
 
     ws.rack_response
 
-  # FIRMWARE UPLOAD
+  # FIRMWARE UPLOAD - FIXED: Proper regex
   elsif req.post? && path == '/api/firmware'
     upload = req.params['file']
     if upload && upload[:tempfile]
       firmware_data = upload[:tempfile].read
       firmware_hash = Digest::SHA256.hexdigest(firmware_data)[0..8]
+      
+      # FIXED: Correct regex for version parsing
+      version_match = upload[:filename]&.match(/v(\d+\.\d+\.\d+)/)
+      version = version_match ? "v#{version_match[1]}" : 'v2.1.0'
 
       $drone_fleet['drone-001'][:firmware] = {
-        version: upload[:filename].match(/v(\d+\.\d+\.\d+)/) ? upload[:filename] : 'v2.1.0',
-        hash:  firmware_hash,
+        version: version,
+        hash: firmware_hash,
         status: 'FLASHING',
         timestamp: Time.now.iso8601,
         size: firmware_data.bytesize
@@ -211,14 +234,14 @@ app = lambda do |env|
   # API COMMAND
   elsif req.post? && path == '/api/drone_cmd'
     drone_id = req.params['drone_id'] || 'drone-001'
-    action   = req.params['action']   || 'unknown'
+    action = req.params['action'] || 'unknown'
 
     if $drone_fleet[drone_id]
       case action
       when 'mission_start'; $drone_fleet[drone_id][:status] = 'MISSION_ACTIVE'
-      when 'rtl';         $drone_fleet[drone_id][:status] = 'RTL_PHX_HQ'
-      when 'land';        $drone_fleet[drone_id][:status] = 'LANDING'
-      when 'emergency';   $drone_fleet[drone_id][:status] = 'EMERGENCY'
+      when 'rtl';           $drone_fleet[drone_id][:status] = 'RTL_PHX_HQ'
+      when 'land';          $drone_fleet[drone_id][:status] = 'LANDING'
+      when 'emergency';     $drone_fleet[drone_id][:status] = 'EMERGENCY'
       end
     end
     [200, {'content-type' => 'application/json'}, [JSON.dump({status: 'command_sent', drone_id: drone_id, action: action})]]
@@ -230,7 +253,8 @@ app = lambda do |env|
       uptime_s: uptime,
       db: $DB ? 'online' : 'offline',
       fleet_size: $drone_fleet.size,
-      stripe_key_present: !Stripe.api_key.to_s.empty?
+      active_timers: $timers.size,
+      ws_connections: $timers.size
     }
 
     body_html = <<~HTML
@@ -273,7 +297,7 @@ HTML
 
   # HEALTH
   elsif path == '/health'
-    [200, {'content-type' => 'application/json'}, [JSON.dump({ok: true, requests: $request_count, uptime_s: uptime, fleet_size: $drone_fleet.size})]]
+    [200, {'content-type' => 'application/json'}, [JSON.dump({ok: true, requests: $request_count, uptime_s: uptime, fleet_size: $drone_fleet.size, active_timers: $timers.size})]]
 
   else
     [404, {'content-type' => 'text/plain'}, ['404 Drone corridor not found']]
