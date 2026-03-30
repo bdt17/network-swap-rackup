@@ -1,10 +1,10 @@
 source 'https://rubygems.org'
+
 ruby '3.2.3'
 
-gem 'rack', '~> 3.0'
-gem 'rackup'
-gem 'webrick'  # NO NIO4R! Clean server
+gem 'rack', '~> 3.2'
+gem 'rackup', '~> 2.3'
+gem 'faye-websocket', '~> 0.11'
 gem 'pg', '~> 1.5'
-gem 'stripe'
-gem 'faye-websocket'
-gem 'redis'
+gem 'json', '~> 2.6'
+gem 'securerandom'
