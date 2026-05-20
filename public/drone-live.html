@@ -1,34 +1,81 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>🦾 DJI Swarm Live - Phoenix DC21</title>
   <script src="https://unpkg.com/@rails/actioncable@8.1.2/dist/umd/actioncable.esm.js"></script>
   <style>
-    body { font-family: Arial; background: #1a202c; color: white; padding: 40px; }
-    .drone { background: linear-gradient(135deg, #10b981, #059669); padding: 30px; border-radius: 16px; margin: 20px 0; }
-    .issue { background: #ef4444; padding: 12px; border-radius: 8px; margin: 8px 0; }
-    button { background: #8b5cf6; color: white; padding: 20px 40px; font-size: 20px; border: none; border-radius: 12px; cursor: pointer; }
+    body {
+      font-family: Arial, sans-serif;
+      background: #1a202c;
+      color: white;
+      padding: 40px;
+      margin: 0;
+    }
+    .drone {
+      background: linear-gradient(135deg, #10b981, #059669);
+      padding: 30px;
+      border-radius: 16px;
+      margin: 20px 0;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      font-size: 18px;
+      line-height: 1.5;
+    }
+    .issue {
+      background: #ef4444;
+      padding: 12px;
+      border-radius: 8px;
+      margin: 8px 0;
+      color: white;
+      font-weight: 600;
+    }
+    button {
+      background: #8b5cf6;
+      color: white;
+      padding: 16px 28px;
+      font-size: 18px;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background: #7c3aed;
+    }
   </style>
 </head>
 <body>
-  <h1 style="font-size: 3em;">🦾 DJI-PHX-179 Live Telemetry</h1>
+  <h1 style="font-size: 3em; margin-bottom: 10px;">🦾 DJI-PHX-179 Live Telemetry</h1>
   <div id="fleet-status" class="drone">Connecting to Phoenix DC21 fleet...</div>
   <div id="issues"></div>
   <button onclick="launchSwarm()">🚀 Launch Inspection Swarm</button>
 
   <script>
-    const cable = ActionCable.createConsumer('wss://network-swap-app.onrender.com/cable');
-    const channel = cable.subscriptions.create({channel: 'DroneChannel'}, {
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const cableUrl = `${scheme}://${window.location.host}/cable`;
+    const cable = ActionCable.createConsumer(cableUrl);
+
+    const channel = cable.subscriptions.create({ channel: 'DroneChannel' }, {
+      connected() {
+        console.log("DroneChannel connected");
+      },
+      disconnected() {
+        console.log("DroneChannel disconnected");
+      },
       received(data) {
         document.getElementById('fleet-status').innerHTML = `
           📍 ${data.drone_id}<br>
           🔋 ${data.battery}% Battery<br>
-          ⏰ ${new Date(data.timestamp).toLocaleString()}
+          ⏰ ${new Date(data.timestamp || Date.now()).toLocaleString()}
         `;
-        if (data.issues) {
-          document.getElementById('issues').innerHTML = data.issues.map(i => 
+
+        if (data.issues && data.issues.length) {
+          document.getElementById('issues').innerHTML = data.issues.map(i =>
             `<div class="issue">⚠️ ${i}</div>`
           ).join('');
+        } else {
+          document.getElementById('issues').innerHTML = '';
         }
       }
     });
@@ -37,6 +84,7 @@
       channel.perform('receive', {
         drone_id: 'DJI-PHX-179',
         battery: 87,
+        timestamp: new Date().toISOString(),
         issues: ['loose RJ45 rack 3U', 'thermal alert switch B2']
       });
     }
