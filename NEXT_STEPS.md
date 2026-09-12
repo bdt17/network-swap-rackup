@@ -224,6 +224,47 @@ check rather than trusting semver). Also verified the whole test suite
 passes against a real local Postgres server, not just sqlite, since that's
 what CI (and production) actually run against.
 
+## Phase 5 — Real front-end design pass + operational functions — DONE (2026-09-12)
+
+Kept the "cyberpunk neon" identity (deliberate choice over a generic redesign)
+but executed it properly, plus real new functionality:
+
+- **Live radar map.** Replaces plain "Lat/Lon: X, Y" text with an actual
+  SVG radar (`radar_svg`/`radar_blips` in `app.rb`): concentric rings, a
+  continuously-rotating sweep, and a pulsing status-colored blip per drone,
+  labeled with its slug. Auto-fits every drone's lat/lon into the circle
+  around the fleet's own midpoint (not a real map/no tiles), so a
+  newly-added drone anywhere on Earth still shows up sensibly rather than
+  needing a fixed real-world scale — verified with a drone at `(0,0)` and
+  one at `(10,10)` both clamping inside the circle. The sweep's rotation
+  `<g>` is deliberately left untouched by live WebSocket updates (only
+  `#radar-blips` gets replaced each tick) so the animation never resets
+  mid-sweep — a naive full-redraw-on-every-tick approach would have made it
+  visibly stutter every 6 seconds.
+- **Fleet alerts panel.** Live-computed anomaly list: battery ≤15% (and not
+  already charging), camera `DEGRADED`/`OFFLINE`, link signal ≤ ‑80dBm — or
+  "✅ All systems nominal" when clean. Computed both server-side (initial
+  render) and client-side (`computeAlerts`, mirrors the Ruby logic exactly)
+  so it updates live via the same WebSocket broadcast everything else uses.
+- **Real history charts.** Sparkline SVGs (thin 2px line, single hue,
+  hover tooltips showing exact value + time) for battery, temperature, link
+  signal, and altitude on the per-drone history page — using the
+  `dataviz` skill's mark specs (thin marks, rounded data, no dual-axis, one
+  hue per magnitude series, status colors reserved and always paired with a
+  text label, never color-alone). Battery is now also logged to
+  `stream_readings` on every change specifically so it has real history to
+  chart — previously only its *current* value ever persisted anywhere.
+- **CSV export** (`GET /drones.csv`) — the whole fleet's current state and
+  latest telemetry in one file, matching the CSV-export pattern
+  `network-swap-app` already uses for devices/tickets/invoices.
+- **Visual polish.** A subtle animated scanline texture, a numeric
+  percentage readout overlaid on the battery bar (previously just a color
+  bar with no number), button hover states, shared `base_css` extracted so
+  the dashboard and history page stay visually consistent instead of
+  duplicating (and drifting from) the same rules.
+- 7 new tests (radar clamping, alerts nominal/low-battery/degraded-camera,
+  CSV export, chart rendering). 44 tests total, all passing.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a

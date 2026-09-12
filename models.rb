@@ -81,6 +81,16 @@ class StreamReading < Sequel::Model
       .group_by(&:stream_name)
       .transform_values { |rows| { value: rows.first.value, recorded_at: rows.first.recorded_at } }
   end
+
+  # Oldest-first (chart-reading order), values parsed to Float by stripping
+  # any non-numeric unit suffix (e.g. "-62dBm" => -62.0, "34°C" => 34.0).
+  # => [{ value: 34.0, recorded_at: }, ...]
+  def self.numeric_history_for(drone_id, stream_name)
+    where(drone_id: drone_id, stream_name: stream_name)
+      .order(:recorded_at)
+      .all
+      .map { |r| { value: r.value.to_s[/-?\d+(\.\d+)?/].to_f, recorded_at: r.recorded_at } }
+  end
 end
 
 class User < Sequel::Model

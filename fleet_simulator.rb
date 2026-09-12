@@ -38,6 +38,17 @@ module FleetSimulator
     'altitude' => '📏 Altitude'
   }.freeze
 
+  # Numeric streams worth charting on the history page, with the label/unit
+  # to show there. `battery` isn't in STREAM_LABELS (its current value has
+  # its own bar on the dashboard card already) but is charted here since
+  # it's the one most worth seeing a trend for.
+  CHART_STREAMS = {
+    'battery' => { label: '🔋 Battery', unit: '%' },
+    'temperature' => { label: '🌡️ Temperature', unit: '°C' },
+    'link_signal' => { label: '📶 Link signal', unit: 'dBm' },
+    'altitude' => { label: '📏 Altitude', unit: 'm' }
+  }.freeze
+
   @mutex = Mutex.new
   @tick_count = 0
   @last_tick_at = nil
@@ -75,6 +86,10 @@ module FleetSimulator
     Drone.each do |drone|
       changes = next_state_for(drone)
       unless changes.empty?
+        # Recorded as its own stream (in addition to living on the drones
+        # row) purely so the history page can chart it over time - the
+        # drones table only ever holds the current value.
+        StreamReading.record!(drone, 'battery', changes[:battery]) if changes.key?(:battery)
         drone.update(changes)
         changed = true
       end

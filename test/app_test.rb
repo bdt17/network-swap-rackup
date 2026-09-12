@@ -21,6 +21,73 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, 'drone-002'
   end
 
+  def test_index_renders_radar_and_alerts_panels
+    get '/'
+
+    assert_includes last_response.body, 'radar-blips'
+    assert_includes last_response.body, 'fleet-alerts'
+  end
+
+  def test_fleet_alerts_shows_nominal_when_healthy
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_fleet_alerts_flags_low_battery
+    Drone.first(slug: 'drone-001').update(battery: 10, status: 'ACTIVE')
+
+    get '/'
+
+    assert_includes last_response.body, 'battery low'
+  end
+
+  def test_fleet_alerts_flags_degraded_camera
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'camera', 'DEGRADED')
+
+    get '/'
+
+    assert_includes last_response.body, 'camera DEGRADED'
+  end
+
+  def test_radar_blips_stay_within_radius_for_far_outliers
+    near = Drone.create(slug: 'radar-near', lat: 33.5, lon: (-112.1), battery: 50, status: 'ACTIVE',
+                         firmware_version: 'v1')
+    far = Drone.create(slug: 'radar-far', lat: 40.0, lon: (-70.0), battery: 50, status: 'ACTIVE',
+                        firmware_version: 'v1')
+
+    blips = App.new!.send(:radar_blips, [near, far])
+
+    blips.each do |b|
+      dist = Math.sqrt(((b[:x] - 150)**2) + ((b[:y] - 150)**2))
+      assert_operator dist, :<=, 130.1
+    end
+  end
+
+  def test_drones_csv_export
+    get '/drones.csv'
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.content_type, 'csv'
+    assert_includes last_response.body, 'slug,status,battery'
+    assert_includes last_response.body, 'drone-001'
+  end
+
+  def test_history_page_renders_charts
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'battery', '50')
+    StreamReading.record!(drone, 'battery', '55')
+
+    get '/drones/drone-001'
+
+    assert_includes last_response.body, 'sparkline'
+    assert_includes last_response.body, 'Battery'
+  end
+
   def test_unauthenticated_request_is_redirected_to_login
     # A fresh Rack::Test session with no cookies at all - before_setup's
     # login doesn't apply here.
