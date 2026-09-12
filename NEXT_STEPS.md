@@ -265,17 +265,39 @@ but executed it properly, plus real new functionality:
 - 7 new tests (radar clamping, alerts nominal/low-battery/degraded-camera,
   CSV export, chart rendering). 44 tests total, all passing.
 
+## Phase 6 — Login rate limiting — DONE (2026-09-12)
+
+`rate_limiter.rb`: an in-memory limiter (10 attempts / 3 minutes / IP,
+matching `network-swap-app`'s own `rate_limit to: 10, within: 3.minutes` on
+its SessionsController) applied to both `POST /login` and
+`POST /two-factor-challenge` — a 429 with "Too many attempts" past the
+limit. In-memory rather than DB-backed, consistent with everything else in
+this app (`settings.sockets`, `FleetSimulator`'s tick gate) being
+single-instance-only by design already (gap #1 below).
+
+Verified for real, not just via unit tests: booted the app locally and sent
+11 rapid wrong-password attempts at `/login` — the first 10 came back 401,
+the 11th came back 429 with the expected message. 5 new tests (the limiter's
+own bucketing/expiry logic, plus one hitting the real route). Also fixed a
+rare pre-existing flake surfaced while adding these:
+`test_next_state_for_active_drone_drains_and_drifts` asserted only `lat`
+changed, which had a small chance of failing when that axis's random drift
+happened to round to exactly 0.0 - now checks that at least one of lat/lon
+changed, since both rounding to zero at once is vanishingly unlikely. 49
+tests total, all passing (confirmed 3 runs in a row, given the previous
+test was randomness-dependent).
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
 working live-ish demo dashboard with real login and telemetry as it stands.
 
-1. **Single-instance only.** `settings.sockets` (WebSocket broadcast) and
-   `FleetSimulator`'s tick gate are both in-memory — only work correctly on
-   exactly one running instance. Fine for the current single-instance Render
-   deploy; would need a pub/sub layer (Redis, or Postgres `LISTEN`/`NOTIFY`)
-   for broadcast and a DB-backed lock for the tick gate the moment this runs
-   on more than one instance.
+1. **Single-instance only.** `settings.sockets` (WebSocket broadcast),
+   `FleetSimulator`'s tick gate, and now `RateLimiter` are all in-memory —
+   only work correctly on exactly one running instance. Fine for the
+   current single-instance Render deploy; would need a shared store (Redis,
+   or Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
+   than one instance.
 2. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
    file but never reads or stores it — it just bumps a version string.
    Real firmware handling would need file storage (same R2/Active-Storage-
@@ -285,13 +307,7 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    flash firmware, disable *their own* 2FA) — there's no admin/viewer
    distinction the way `network-swap-app` has admin/tech. Not needed yet at
    one-or-two-user scale; worth adding if this gets more users.
-4. **No login rate limiting.** `network-swap-app` rate-limits its public
-   mutating endpoints; `/login` and `/two-factor-challenge` here don't have
-   that yet, so they're brute-forceable at whatever rate an attacker can hit
-   the network with. Worth adding (Rack::Attack or a hand-rolled
-   `Rails.cache`-style counter, same idea Phase 30 of the sibling app used
-   for its daily request cap) before this is exposed somewhere that matters.
-5. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
+4. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
    nothing ever reads it to expire an idle session, unlike
    `network-swap-app`'s `SESSION_TIMEOUT_HOURS`. Sessions live until manual
    logout or a DB row deletion.

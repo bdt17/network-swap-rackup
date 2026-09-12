@@ -17,7 +17,10 @@ class FleetSimulatorTest < Minitest::Test
     changes = FleetSimulator.next_state_for(drone)
 
     assert changes[:battery] < 80
-    refute_equal 10.0, changes[:lat]
+    # Checking both lat and lon (rather than just lat) avoids a rare flake:
+    # each axis's random drift independently has a small chance of rounding
+    # to exactly 0.0000, but not both at once.
+    refute(changes[:lat] == 10.0 && changes[:lon] == 20.0)
   end
 
   def test_next_state_for_low_battery_forces_charging

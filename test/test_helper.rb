@@ -40,6 +40,7 @@ module DroneTestHelpers
     BackupCode.dataset.delete
     User.dataset.delete
     User.create(email: TEST_EMAIL, password: TEST_PASSWORD)
+    RateLimiter.reset! # otherwise one test suite run's worth of logins trips the real limit
     post '/login', email: TEST_EMAIL, password: TEST_PASSWORD
   end
 end

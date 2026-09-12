@@ -2,6 +2,7 @@ require 'securerandom'
 require 'rotp'
 require 'rqrcode'
 require_relative 'models'
+require_relative 'rate_limiter'
 
 # Login + two-factor auth for the dashboard, mirroring the pattern already
 # proven in network-swap-app (the sibling Rails app): bcrypt-hashed
@@ -195,6 +196,11 @@ class App < Sinatra::Base
   end
 
   post '/login' do
+    if RateLimiter.exceeded?(:login, request.ip)
+      content_type :html
+      halt 429, login_page(error: 'Too many attempts. Try again in a few minutes.')
+    end
+
     user = User.first(email: params['email'].to_s.strip.downcase)
     unless user&.authenticate(params['password'].to_s)
       content_type :html
@@ -221,6 +227,11 @@ class App < Sinatra::Base
   post '/two-factor-challenge' do
     user = pending_mfa_user
     redirect '/login' unless user
+
+    if RateLimiter.exceeded?(:two_factor, request.ip)
+      content_type :html
+      halt 429, two_factor_page(error: 'Too many attempts. Try again in a few minutes.')
+    end
 
     if valid_totp_or_backup_code?(user, params['code'])
       clear_pending_mfa!

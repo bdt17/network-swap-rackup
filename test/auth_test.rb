@@ -26,6 +26,16 @@ class AuthTest < Minitest::Test
     assert_includes session.last_response.body, 'Invalid email or password'
   end
 
+  def test_login_is_rate_limited_after_too_many_attempts
+    # before_setup's own successful login already counts as attempt 1 for
+    # this IP; 9 more (any outcome) brings it to 10, then the 11th is over.
+    9.times { post '/login', email: TEST_EMAIL, password: 'wrong' }
+    post '/login', email: TEST_EMAIL, password: 'wrong'
+
+    assert_equal 429, last_response.status
+    assert_includes last_response.body, 'Too many attempts'
+  end
+
   def test_logout_clears_the_session
     post '/logout'
     assert_equal 302, last_response.status
