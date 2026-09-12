@@ -196,6 +196,8 @@ class App < Sinatra::Base
   end
 
   post '/login' do
+    warn "DEBUG login ip=#{request.ip.inspect} xff=#{request.env['HTTP_X_FORWARDED_FOR'].inspect} " \
+         "remote_addr=#{request.env['REMOTE_ADDR'].inspect}"
     if RateLimiter.exceeded?(:login, request.ip)
       content_type :html
       halt 429, login_page(error: 'Too many attempts. Try again in a few minutes.')
