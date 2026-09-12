@@ -22,18 +22,27 @@ module FleetSimulator
     @tick_count = 0
     @last_tick_at = nil
     @last_error = nil
+    @thread_started_at = nil
     @thread = Thread.new do
+      # Recorded as literally the first statement so /health can tell "the
+      # thread body never ran at all" apart from "it ran and then died."
+      @thread_started_at = Time.now
       loop do
         sleep TICK_SECONDS
         tick!(&broadcaster)
       end
-    rescue StandardError => e
-      # Belt and suspenders: tick! already rescues per-tick errors so the
-      # loop keeps going, but if something outside that (e.g. in `loop`
-      # itself) ever raised, the thread would otherwise die silently and
-      # every symptom would look identical to "the simulator just stopped."
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      # Deliberately broader than StandardError while diagnosing a
+      # production-only bug where this thread was dying with tick_count: 0
+      # and no error recorded under `rescue StandardError` - so whatever
+      # killed it isn't a StandardError (could be a signal-derived exception,
+      # or something Puma itself raises into background threads). tick!
+      # already rescues per-tick StandardErrors so the loop keeps going
+      # normally; this is only ever reached for something that would
+      # otherwise kill the thread silently.
       @last_error = "loop crashed: #{e.class}: #{e.message}"
-      warn "FleetSimulator thread died: #{e.class}: #{e.message}"
+      warn "FleetSimulator thread died: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
+      raise if e.is_a?(SystemExit)
     end
   end
 
@@ -41,6 +50,7 @@ module FleetSimulator
     {
       started: !!@started,
       thread_alive: @thread&.alive? || false,
+      thread_started_at: @thread_started_at&.iso8601,
       tick_count: @tick_count || 0,
       last_tick_at: @last_tick_at&.iso8601,
       last_error: @last_error
