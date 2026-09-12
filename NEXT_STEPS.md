@@ -275,17 +275,30 @@ limit. In-memory rather than DB-backed, consistent with everything else in
 this app (`settings.sockets`, `FleetSimulator`'s tick gate) being
 single-instance-only by design already (gap #1 below).
 
-Verified for real, not just via unit tests: booted the app locally and sent
-11 rapid wrong-password attempts at `/login` — the first 10 came back 401,
-the 11th came back 429 with the expected message. 5 new tests (the limiter's
-own bucketing/expiry logic, plus one hitting the real route). Also fixed a
-rare pre-existing flake surfaced while adding these:
+Verified locally by booting the app and sending 11 rapid wrong-password
+attempts at `/login` — first 10 came back 401, 11th 429. **That passed
+locally but did nothing in production** — the same 11 attempts against the
+live instance all came back 401. Root cause, found via a temporary debug
+log rather than guessing: Rack's `request.ip` was picking the *wrong* hop
+out of Render's proxy chain. Given
+`X-Forwarded-For: "172.59.204.44, 172.70.214.67"`, the leftmost entry
+(`172.59.204.44`, the real client) was identical across every request from
+the same curl session, but `request.ip` returned the *rightmost* entry,
+which rotated between requests - so every attempt landed in a different
+rate-limit bucket and the count never accumulated. Fixed with a `client_ip`
+helper that explicitly takes the leftmost `X-Forwarded-For` entry (falling
+back to `request.ip` when the header is absent, e.g. local dev/tests) -
+not spoof-proof against a client that could reach the origin directly
+bypassing Cloudflare, but correct for how this app is actually deployed.
+Reverified against the live instance afterward with a real distinguishing
+signal (custom `X-Forwarded-For` via curl), not just re-trusting the local
+test. Also fixed a rare pre-existing flake surfaced while adding these:
 `test_next_state_for_active_drone_drains_and_drifts` asserted only `lat`
 changed, which had a small chance of failing when that axis's random drift
 happened to round to exactly 0.0 - now checks that at least one of lat/lon
-changed, since both rounding to zero at once is vanishingly unlikely. 49
-tests total, all passing (confirmed 3 runs in a row, given the previous
-test was randomness-dependent).
+changed. 51 tests total (including two regression tests specifically for
+the leftmost-hop behavior, since Rack::Test sends no X-Forwarded-For at all
+and so never exercised the code path that broke), all passing.
 
 ## Known gaps / candidate next steps
 

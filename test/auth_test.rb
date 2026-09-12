@@ -36,6 +36,33 @@ class AuthTest < Minitest::Test
     assert_includes last_response.body, 'Too many attempts'
   end
 
+  # Regression test for a real production bug: Rack::Test sends no
+  # X-Forwarded-For at all, so the plain test above never exercised the
+  # code path that broke in production (behind Render's proxy, plain
+  # request.ip picked a hop that rotated between requests from the same
+  # real client, so the limiter never accumulated enough hits to trigger).
+  def test_rate_limit_keys_on_the_leftmost_x_forwarded_for_entry
+    same_client = { 'HTTP_X_FORWARDED_FOR' => '9.9.9.9, 1.1.1.1' }
+    10.times { post '/login', { email: TEST_EMAIL, password: 'wrong' }, same_client }
+
+    # Same real client (same leftmost hop), but through a different
+    # rightmost proxy hop - this must still be blocked.
+    post '/login', { email: TEST_EMAIL, password: 'wrong' }, { 'HTTP_X_FORWARDED_FOR' => '9.9.9.9, 2.2.2.2' }
+
+    assert_equal 429, last_response.status
+  end
+
+  def test_rate_limit_treats_different_leftmost_hops_as_different_clients
+    post '/login', { email: TEST_EMAIL, password: 'wrong' }, { 'HTTP_X_FORWARDED_FOR' => '8.8.8.8, 1.1.1.1' }
+    10.times { post '/login', { email: TEST_EMAIL, password: 'wrong' }, { 'HTTP_X_FORWARDED_FOR' => '9.9.9.9, 1.1.1.1' } }
+
+    # A genuinely different real client (different leftmost hop) must not
+    # be blocked just because some other client hit the limit.
+    post '/login', { email: TEST_EMAIL, password: 'wrong' }, { 'HTTP_X_FORWARDED_FOR' => '8.8.8.8, 3.3.3.3' }
+
+    refute_equal 429, last_response.status
+  end
+
   def test_logout_clears_the_session
     post '/logout'
     assert_equal 302, last_response.status

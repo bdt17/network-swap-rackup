@@ -46,6 +46,25 @@ class App < Sinatra::Base
       redirect '/login' unless current_user
     end
 
+    # Rack's own request.ip picked the wrong hop behind Render's proxy
+    # chain in production - confirmed via a temporary debug log: given
+    # X-Forwarded-For "172.59.204.44, 172.70.214.67" (leftmost = the real
+    # client, rightmost = the proxy hop that handled this request), it
+    # returned the *rightmost* entry, which rotates between requests from
+    # the very same client. That made rate limiting a no-op in production
+    # despite passing every local/test check, since each attempt landed in
+    # a different bucket. The leftmost entry was stable across repeated
+    # requests from the same curl session and is the standard convention
+    # for "closest to the original client." Not spoof-proof against a
+    # client that could reach the origin directly bypassing Cloudflare, but
+    # good enough for a same-origin best-effort limiter at this app's scale.
+    def client_ip
+      forwarded = request.env['HTTP_X_FORWARDED_FOR']
+      return forwarded.split(',').first.strip if forwarded && !forwarded.strip.empty?
+
+      request.ip
+    end
+
     # A configured DRONE_API_TOKEN bypasses login entirely, for
     # scripts/curl hitting the mutating endpoints without a browser session.
     def valid_api_token?
@@ -196,9 +215,7 @@ class App < Sinatra::Base
   end
 
   post '/login' do
-    warn "DEBUG login ip=#{request.ip.inspect} xff=#{request.env['HTTP_X_FORWARDED_FOR'].inspect} " \
-         "remote_addr=#{request.env['REMOTE_ADDR'].inspect}"
-    if RateLimiter.exceeded?(:login, request.ip)
+    if RateLimiter.exceeded?(:login, client_ip)
       content_type :html
       halt 429, login_page(error: 'Too many attempts. Try again in a few minutes.')
     end
@@ -230,7 +247,7 @@ class App < Sinatra::Base
     user = pending_mfa_user
     redirect '/login' unless user
 
-    if RateLimiter.exceeded?(:two_factor, request.ip)
+    if RateLimiter.exceeded?(:two_factor, client_ip)
       content_type :html
       halt 429, two_factor_page(error: 'Too many attempts. Try again in a few minutes.')
     end
