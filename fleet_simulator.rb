@@ -5,56 +5,59 @@ require_relative 'models'
 # auto-recalls it to CHARGING at low battery, and recharges it back up to
 # ACTIVE. MAINTENANCE-status drones are left alone (grounded).
 #
-# Runs on a single background Thread inside the same process - fine for the
-# single-instance deployment this app runs today. It would need a
-# coordinator (e.g. an advisory lock, or running it as a separate worker
-# process) the moment this runs on more than one instance, so two instances
-# don't both drive the same drones. See NEXT_STEPS.md.
+# Ticks opportunistically off real incoming requests (`App`'s global
+# `before` filter calls `tick_if_due!` on every request) rather than a
+# free-standing background Thread. A Thread-based version was tried first
+# and worked perfectly in local testing (verified with a real WebSocket
+# client receiving a broadcast every tick), but in production the thread
+# reliably died within its first few seconds of life on every boot, with
+# `thread_alive?` false, zero ticks completed, and no exception caught even
+# under `rescue Exception` - meaning something outside Ruby killed it in a
+# way the language can't observe, while the rest of the process (including
+# broadcasts triggered from real requests) kept working correctly the whole
+# time. Piggybacking on request traffic sidesteps that entirely: Render's
+# own health-check polling alone is frequent enough to keep this ticking
+# even with no dashboard open. See NEXT_STEPS.md.
+#
+# Single-process only: `@next_tick_at` is in-memory, so two instances would
+# each tick independently and drive the same drones. Fine for the current
+# single-instance deployment; would need a coordinator (e.g. a DB-backed
+# lock) the moment this runs on more than one instance.
 module FleetSimulator
   TICK_SECONDS = Integer(ENV['SIMULATOR_TICK_SECONDS'] || 6)
   DRIFT = 0.01
   LOW_BATTERY = 15
 
-  def self.start!(&broadcaster)
-    return if @started
-
-    @started = true
-    @tick_count = 0
-    @last_tick_at = nil
-    @last_error = nil
-    @thread_started_at = nil
-    @thread = Thread.new do
-      # Recorded as literally the first statement so /health can tell "the
-      # thread body never ran at all" apart from "it ran and then died."
-      @thread_started_at = Time.now
-      loop do
-        sleep TICK_SECONDS
-        tick!(&broadcaster)
-      end
-    rescue Exception => e # rubocop:disable Lint/RescueException
-      # Deliberately broader than StandardError while diagnosing a
-      # production-only bug where this thread was dying with tick_count: 0
-      # and no error recorded under `rescue StandardError` - so whatever
-      # killed it isn't a StandardError (could be a signal-derived exception,
-      # or something Puma itself raises into background threads). tick!
-      # already rescues per-tick StandardErrors so the loop keeps going
-      # normally; this is only ever reached for something that would
-      # otherwise kill the thread silently.
-      @last_error = "loop crashed: #{e.class}: #{e.message}"
-      warn "FleetSimulator thread died: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
-      raise if e.is_a?(SystemExit)
-    end
-  end
+  @mutex = Mutex.new
+  @tick_count = 0
+  @last_tick_at = nil
+  @last_error = nil
+  @next_tick_at = nil
 
   def self.status
     {
-      started: !!@started,
-      thread_alive: @thread&.alive? || false,
-      thread_started_at: @thread_started_at&.iso8601,
-      tick_count: @tick_count || 0,
+      tick_count: @tick_count,
       last_tick_at: @last_tick_at&.iso8601,
+      next_tick_at: @next_tick_at&.iso8601,
       last_error: @last_error
     }
+  end
+
+  # Called from App's `before` filter on every request. Non-blocking: if
+  # another request is already mid-tick, this just returns rather than
+  # queuing behind it, so a tick can never add latency to unrelated requests.
+  def self.tick_if_due!(&broadcaster)
+    return unless @mutex.try_lock
+
+    begin
+      now = Time.now
+      return if @next_tick_at && now < @next_tick_at
+
+      @next_tick_at = now + TICK_SECONDS
+      tick!(&broadcaster)
+    ensure
+      @mutex.unlock
+    end
   end
 
   def self.tick!
@@ -66,7 +69,7 @@ module FleetSimulator
       drone.update(changes)
       changed = true
     end
-    @tick_count = (@tick_count || 0) + 1
+    @tick_count += 1
     @last_tick_at = Time.now
     yield if changed && block_given?
   rescue StandardError => e
