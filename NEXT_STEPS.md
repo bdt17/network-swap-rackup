@@ -204,6 +204,26 @@ HTTP-triggered flash.
   initial fleet push, and the dashboard/history page rendering live stream
   chips.
 
+## Phase 4 — CI — DONE (2026-09-12)
+
+`.github/workflows/ci.yml`, modeled on `network-swap-app`'s: an `audit` job
+(`bundler-audit`, dependency CVE scanning) and a `test` job (real Postgres
+service container, matching production's adapter rather than the sqlite
+fallback). No Brakeman/Rubocop jobs — this app has neither gem installed nor
+config for them, and adding both well for a Sinatra (not Rails) app was more
+setup than the payoff justified right now.
+
+Setting this up immediately caught something real: `bundler-audit` flagged
+two **High** severity CVEs in Puma 6.6.1 (`CVE-2026-47736`/`-47737`, PROXY
+protocol v1 memory exhaustion), fixed in ≥8.0.2. Bumped `puma` to `~> 8.0`
+and re-verified the fragile part by hand — a real `faye-websocket` client
+authenticating with a session cookie against a live Puma-8-served instance,
+confirmed still receiving fleet data correctly (this is the same dependency
+pair that broke once already going from WEBrick to Puma 6, so it got a real
+check rather than trusting semver). Also verified the whole test suite
+passes against a real local Postgres server, not just sqlite, since that's
+what CI (and production) actually run against.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -220,21 +240,17 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    Real firmware handling would need file storage (same R2/Active-Storage-
    style decision `network-swap-app` made for ticket photos) and a lot more
    care given what firmware flashing actually implies for real hardware.
-3. **No CI.** `network-swap-app` has a GitHub Actions workflow running tests
-   + Brakeman + bundler-audit on every push; this repo has none yet. Worth
-   copying that pattern now that there's a real auth surface to keep
-   regression-tested on every push.
-4. **No roles.** Any logged-in user can do everything (create/delete drones,
+3. **No roles.** Any logged-in user can do everything (create/delete drones,
    flash firmware, disable *their own* 2FA) — there's no admin/viewer
    distinction the way `network-swap-app` has admin/tech. Not needed yet at
    one-or-two-user scale; worth adding if this gets more users.
-5. **No login rate limiting.** `network-swap-app` rate-limits its public
+4. **No login rate limiting.** `network-swap-app` rate-limits its public
    mutating endpoints; `/login` and `/two-factor-challenge` here don't have
    that yet, so they're brute-forceable at whatever rate an attacker can hit
    the network with. Worth adding (Rack::Attack or a hand-rolled
    `Rails.cache`-style counter, same idea Phase 30 of the sibling app used
    for its daily request cap) before this is exposed somewhere that matters.
-6. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
+5. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
    nothing ever reads it to expire an idle session, unlike
    `network-swap-app`'s `SESSION_TIMEOUT_HOURS`. Sessions live until manual
    logout or a DB row deletion.

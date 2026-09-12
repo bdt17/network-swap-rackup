@@ -4,7 +4,7 @@ ruby '3.2.3'
 
 gem 'rack', '~> 3.2'
 gem 'rackup', '~> 2.3'
-gem 'puma', '~> 6.4'   # faye-websocket needs real rack.hijack support; WEBrick's is broken under Rack 3
+gem 'puma', '~> 8.0'   # faye-websocket needs real rack.hijack support; WEBrick's is broken under Rack 3
 gem 'sinatra', '~> 4.1', require: 'sinatra/base'
 gem 'sequel', '~> 5.87'
 gem 'faye-websocket'   # WS for live fleet updates
@@ -20,6 +20,7 @@ end
 
 group :development, :test do
   gem 'sqlite3', '~> 2.1'
+  gem 'bundler-audit', '~> 0.9', require: false
 end
 
 group :test do
