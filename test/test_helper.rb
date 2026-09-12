@@ -12,6 +12,7 @@ Sequel::Migrator.run(DB, File.expand_path('../db/migrations', __dir__))
 
 require_relative '../app'
 require_relative '../auth'
+require_relative '../fleet_simulator'
 require_relative '../db/seeds'
 
 # bcrypt's hashing cost is deliberately expensive in production; drop it for

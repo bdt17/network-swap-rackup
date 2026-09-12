@@ -106,9 +106,21 @@ class App < Sinatra::Base
       end
     end
 
+    def stream_chips_html(drone)
+      streams = drone.latest_streams
+      return '' if streams.empty?
+
+      chips = FleetSimulator::STREAM_LABELS.filter_map do |name, label|
+        next unless streams[name]
+
+        "<span class=\"stream-chip\">#{h(label)}: #{h(streams[name][:value])}</span>"
+      end.join
+      "<div class=\"streams\">#{chips}</div>"
+    end
+
     def drone_card_html(drone)
       <<~HTML
-        <div class="drone-card"><h3>🚁 #{h(drone.slug)}</h3><div>Lat/Lon: #{drone.lat}°N, #{drone.lon}°W</div><div class="status #{drone.status == 'ACTIVE' ? 'online' : 'offline'}">#{h(drone.status)}</div><div class="battery"><div class="battery-fill" style="width:#{drone.battery}%"></div></div><div>Firmware: #{h(drone.firmware_version)}</div><input id="fw-#{h(drone.slug)}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('#{h(drone.slug)}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/#{h(drone.slug)}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('#{h(drone.slug)}')">🗑 Remove</button></div>
+        <div class="drone-card"><h3>🚁 #{h(drone.slug)}</h3><div>Lat/Lon: #{drone.lat}°N, #{drone.lon}°W</div><div class="status #{drone.status == 'ACTIVE' ? 'online' : 'offline'}">#{h(drone.status)}</div><div class="battery"><div class="battery-fill" style="width:#{drone.battery}%"></div></div><div>Firmware: #{h(drone.firmware_version)}</div>#{stream_chips_html(drone)}<input id="fw-#{h(drone.slug)}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('#{h(drone.slug)}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/#{h(drone.slug)}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('#{h(drone.slug)}')">🗑 Remove</button></div>
       HTML
     end
 
@@ -137,6 +149,8 @@ class App < Sinatra::Base
         .hist-link{display:inline-block;text-decoration:none}
         .danger-btn{background:#ff4444;color:#fff}
         .danger-btn:hover{background:#cc0000}
+        .streams{margin:8px 0;display:flex;flex-wrap:wrap;gap:6px}
+        .stream-chip{background:rgba(0,255,204,.15);border:1px solid rgba(0,255,204,.4);border-radius:12px;padding:2px 8px;font-size:.8em}
         </style>
         </head>
         <body>
@@ -149,7 +163,9 @@ class App < Sinatra::Base
         function authHeaders(extra){extra=extra||{};if(apiToken)extra['X-Drone-Token']=apiToken;return extra}
         function setToken(){let t=prompt('API token (leave blank to clear):',apiToken||'');if(t===null)return;apiToken=t;localStorage.setItem('drone_api_token',t)}
         let ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/drone'+(apiToken?('?token='+encodeURIComponent(apiToken)):''));
-        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div></div><div>Firmware: ${d.firmware?.version||'N/A'}</div><input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/${i}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button></div>`}}
+        let streamLabels={camera:'📷 Camera',link_signal:'📶 Link',temperature:'🌡️ Temp',altitude:'📏 Altitude'};
+        function streamChipsHtml(streams){if(!streams)return'';return `<div class="streams">`+Object.keys(streamLabels).filter(k=>streams[k]).map(k=>`<span class="stream-chip">${streamLabels[k]}: ${streams[k]}</span>`).join('')+`</div>`}
+        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams)}<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/${i}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button></div>`}}
         ws.onmessage=e=>{let msg=JSON.parse(e.data);if(msg.type!=='fleet')return;renderFleet(msg.drones)};
         function uploadFirmware(id){let f=document.getElementById('fw-'+id).files[0];if(!f)return alert('Select firmware');let form=new FormData;form.append('firmware',f);form.append('drone_id',id);fetch('/api/firmware',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>alert('Flash: '+(d.status||d.error)))}
         function addDrone(){let slug=prompt('New drone id (e.g. drone-003):');if(!slug)return;let lat=prompt('Latitude:','33.45'),lon=prompt('Longitude:','-112.07');let form=new FormData;form.append('slug',slug);form.append('lat',lat);form.append('lon',lon);fetch('/api/drones',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
@@ -161,8 +177,11 @@ class App < Sinatra::Base
     end
 
     def history_page(drone)
+      stream_label = ->(name) { FleetSimulator::STREAM_LABELS[name] || name }
       events = (drone.firmware_events.map { |e| [e.flashed_at, "Firmware #{h(e.from_version)} → #{h(e.to_version)}"] } +
-                 drone.command_events.map { |e| [e.received_at, "Command: #{h(e.raw_payload)}"] }).sort_by { |t, _| t }.reverse
+                 drone.command_events.map { |e| [e.received_at, "Command: #{h(e.raw_payload)}"] } +
+                 drone.stream_readings.map { |r| [r.recorded_at, "#{h(stream_label.call(r.stream_name))}: #{h(r.value)}"] }
+               ).sort_by { |t, _| t }.reverse.first(50)
 
       rows = events.map { |t, desc| "<div class=\"event-row\"><span class=\"event-time\">#{h(t)}</span> #{desc}</div>" }.join
       rows = '<div class="event-row">No history yet.</div>' if events.empty?

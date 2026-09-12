@@ -28,6 +28,16 @@ module FleetSimulator
   DRIFT = 0.01
   LOW_BATTERY = 15
 
+  # Named telemetry channels distinct from the drone's core state
+  # (lat/lon/battery/status, which live on the drones table directly). Each
+  # is labeled and displayed separately on the dashboard and history page.
+  STREAM_LABELS = {
+    'camera' => '📷 Camera',
+    'link_signal' => '📶 Link',
+    'temperature' => '🌡️ Temp',
+    'altitude' => '📏 Altitude'
+  }.freeze
+
   @mutex = Mutex.new
   @tick_count = 0
   @last_tick_at = nil
@@ -64,10 +74,15 @@ module FleetSimulator
     changed = false
     Drone.each do |drone|
       changes = next_state_for(drone)
-      next if changes.empty?
+      unless changes.empty?
+        drone.update(changes)
+        changed = true
+      end
 
-      drone.update(changes)
-      changed = true
+      stream_updates_for(drone).each do |name, value|
+        StreamReading.record!(drone, name, value)
+        changed = true
+      end
     end
     @tick_count += 1
     @last_tick_at = Time.now
@@ -93,5 +108,22 @@ module FleetSimulator
       lat: (drone.lat.to_f + ((rand - 0.5) * DRIFT)).round(4),
       lon: (drone.lon.to_f + ((rand - 0.5) * DRIFT)).round(4)
     }
+  end
+
+  def self.stream_updates_for(drone)
+    grounded = %w[CHARGING OFFLINE MAINTENANCE].include?(drone.status)
+
+    {
+      'camera' => camera_reading(drone),
+      'link_signal' => "#{grounded ? rand(-55..-45) : rand(-90..-60)}dBm",
+      'temperature' => "#{grounded ? rand(18..24) : rand(28..42)}°C",
+      'altitude' => grounded ? '0m' : "#{rand(80..150)}m"
+    }
+  end
+
+  def self.camera_reading(drone)
+    return 'OFFLINE' if drone.status == 'MAINTENANCE'
+
+    rand(100) < 5 ? 'DEGRADED' : 'OK'
   end
 end

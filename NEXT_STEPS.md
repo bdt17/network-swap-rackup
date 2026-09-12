@@ -165,18 +165,56 @@ HTTP-triggered flash.
   `provisioning_uri`. Caught immediately because the 2FA enrollment test
   actually renders the page and asserts on it, rather than mocking TOTP out.
 
+## Phase 3 — Named telemetry streams, and a real production bug fix — DONE (2026-09-12)
+
+- **Named simulated telemetry streams.** Beyond the drone's core state
+  (lat/lon/battery/status, unchanged), each drone now has four independent,
+  labeled data channels updated every simulator tick: **📷 Camera**
+  (`OK`/`DEGRADED`, `OFFLINE` when grounded for maintenance), **📶 Link**
+  (signal strength, stronger when grounded/near base), **🌡️ Temp** (warmer
+  while flying), **📏 Altitude** (0 when grounded). New `stream_readings`
+  table (`StreamReading` model) — self-limiting like `AssistantFeedback` in
+  the sibling app: each write prunes that drone+stream pair down to the
+  most recent 20 readings, so it never needs a cron job to stay bounded.
+  Shown as labeled chips on each drone card (both server-rendered and the
+  WebSocket-updated view) and merged into the per-drone history timeline
+  alongside firmware/command events.
+- **Real production bug found and fixed: the background-thread simulator
+  never actually worked in production.** Phase 2's `Thread.new`-based
+  simulator was verified working *locally* (a real WebSocket client received
+  a broadcast every tick for 20+ seconds), but in production the thread
+  reliably died within its first few seconds on every boot —
+  `thread_alive?` false, zero ticks completed, and no exception caught even
+  under a temporarily widened `rescue Exception` — while the rest of the
+  process (Puma, the DB, broadcasts triggered from real HTTP requests)
+  worked correctly for the process's entire lifetime. That combination
+  (dies immediately, nothing in Ruby can observe why, everything else is
+  fine) means something outside the language was killing it — not a bug
+  reachable by fixing the rescue clause. Root-caused via a health-endpoint
+  diagnostic (`FleetSimulator.status`: tick count, last tick time, last
+  error) added specifically to compare "did it ever run" against "is it
+  alive now," rather than guessing blind. **Fix:** `FleetSimulator.tick_if_due!`
+  replaces the Thread entirely — `App`'s global `before` filter calls it on
+  every real incoming request, a mechanism already proven 100% reliable
+  here. Render's own health-check polling alone keeps it ticking even with
+  zero dashboard tabs open. Non-blocking (`Mutex#try_lock`), so a tick can
+  never add latency to a concurrent unrelated request.
+- Verified end-to-end against the deployed instance after each fix: `/health`
+  showing real tick counts advancing, a real `wss://` client receiving the
+  initial fleet push, and the dashboard/history page rendering live stream
+  chips.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
-working live-ish demo dashboard with real login as it stands.
+working live-ish demo dashboard with real login and telemetry as it stands.
 
-1. **Single-process broadcast and simulator both.** `settings.sockets` is an
-   in-memory array, and the fleet simulator is a plain `Thread` in the same
-   process — both only work correctly on exactly one running instance. Fine
-   for the current single-instance Render deploy; would need a pub/sub layer
-   (Redis, or Postgres `LISTEN`/`NOTIFY`) for broadcast and some kind of
-   leader-election or external scheduler for the simulator the moment this
-   runs on more than one instance.
+1. **Single-instance only.** `settings.sockets` (WebSocket broadcast) and
+   `FleetSimulator`'s tick gate are both in-memory — only work correctly on
+   exactly one running instance. Fine for the current single-instance Render
+   deploy; would need a pub/sub layer (Redis, or Postgres `LISTEN`/`NOTIFY`)
+   for broadcast and a DB-backed lock for the tick gate the moment this runs
+   on more than one instance.
 2. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
    file but never reads or stores it — it just bumps a version string.
    Real firmware handling would need file storage (same R2/Active-Storage-

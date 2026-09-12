@@ -125,6 +125,27 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, 'v2.2.0'
   end
 
+  def test_history_page_renders_stream_readings
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'camera', 'DEGRADED')
+
+    get '/drones/drone-001'
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, 'Camera'
+    assert_includes last_response.body, 'DEGRADED'
+  end
+
+  def test_index_renders_stream_chips_for_seeded_drones
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'altitude', '120m')
+
+    get '/'
+
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, '120m'
+  end
+
   def test_history_page_404s_for_unknown_drone
     get '/drones/does-not-exist'
 
