@@ -19,11 +19,29 @@ class App < Sinatra::Base
   PUBLIC_PATHS = ['/login', '/two-factor-challenge', '/health'].freeze
 
   helpers do
+    def session_timeout_hours
+      hours = ENV['SESSION_TIMEOUT_HOURS'].to_f
+      hours.positive? ? hours : nil
+    end
+
     def current_user
       return @current_user if defined?(@current_user)
 
+      # No bound request means no real dispatch happened - e.g. a unit test
+      # calling a helper directly on a bare App.new! instance rather than
+      # through an actual HTTP/WS request cycle. No request, no session.
+      return @current_user = nil unless request
+
       token = request.cookies[SESSION_COOKIE]
       row = token && Session.first(token: token)
+
+      timeout = session_timeout_hours
+      if row && timeout && row.last_active_at && (Time.now - row.last_active_at) > (timeout * 3600)
+        row.destroy
+        response.delete_cookie(SESSION_COOKIE, path: '/')
+        return @current_user = nil
+      end
+
       row&.update(last_active_at: Time.now)
       @current_user = row&.user
     end
@@ -73,6 +91,20 @@ class App < Sinatra::Base
 
       provided = request.env['HTTP_X_DRONE_TOKEN'] || params['token']
       provided == configured
+    end
+
+    # A configured DRONE_API_TOKEN keeps its original full-access design
+    # (it's a shared secret for scripts, with no associated user/role) -
+    # only a *logged-in, non-admin* user is actually blocked here.
+    def admin_access?
+      valid_api_token? || current_user&.admin? || false
+    end
+
+    # halt only works within a route's own request cycle - fine for normal
+    # HTTP routes, but a WebSocket message handler runs later in an async
+    # callback, so it uses admin_access? directly instead of this.
+    def require_admin!
+      halt 403, { error: 'Admins only' }.to_json unless admin_access?
     end
 
     def pending_mfa_user

@@ -1,14 +1,24 @@
 #!/usr/bin/env ruby
 # Creates a login user for the drone dashboard, or resets an existing one's
-# password. Usage: bin/create_user you@example.com 'a-strong-password'
+# password. Usage: bin/create_user you@example.com 'a-strong-password' [role]
+# role defaults to admin - unlike network-swap-app, nothing here provisions
+# other accounts through a UI, so this script stays the one path for
+# creating a user and admin keeps today's behavior unchanged. Pass "viewer"
+# explicitly for a read-only account.
 require 'bundler/setup'
 require_relative '../models'
 
 email = ARGV[0]
 password = ARGV[1]
+role = ARGV[2] || 'admin'
 
 if email.nil? || password.nil?
-  warn 'Usage: bin/create_user <email> <password>'
+  warn 'Usage: bin/create_user <email> <password> [role: admin|viewer]'
+  exit 1
+end
+
+unless User::ROLES.include?(role)
+  warn "role must be one of #{User::ROLES.join(', ')}"
   exit 1
 end
 
@@ -20,6 +30,6 @@ if user
   user.save
   puts "Updated password for #{email}"
 else
-  User.create(email: email, password: password)
-  puts "Created user #{email}"
+  User.create(email: email, password: password, role: role)
+  puts "Created #{role} #{email}"
 end

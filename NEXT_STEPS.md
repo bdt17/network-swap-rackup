@@ -300,27 +300,51 @@ changed. 51 tests total (including two regression tests specifically for
 the leftmost-hop behavior, since Rack::Test sends no X-Forwarded-For at all
 and so never exercised the code path that broke), all passing.
 
+## Phase 7 — Roles + session expiry — DONE (2026-09-12)
+
+- **Roles.** `users.role` (`admin`/`viewer`, migration backfills existing
+  accounts to `admin` so nobody's own access silently changed). Viewers can
+  sign in, view the dashboard/history/radar/alerts, and manage their own
+  password/2FA, but can't create/delete drones, flash firmware, or send
+  WebSocket commands (`recall`/`resume`/`set_status`) - `require_admin!`
+  gates the HTTP routes (halts 403), `admin_access?` gates the WebSocket
+  command handler (halt doesn't work in an async callback outside the
+  request cycle, so it just returns an unapplied result with an error
+  instead). A configured `DRONE_API_TOKEN` keeps its original full-access
+  design either way - it's a shared secret for scripts with no associated
+  user, not subject to role checks. The UI hides admin-only controls
+  (Add Drone, Flash, Remove) for viewers server-side on first render and
+  client-side on every live WebSocket update, rather than showing buttons
+  that would just 403 on click. `bin/create_user` takes an optional role
+  argument (default `admin`, since nothing in this app provisions other
+  accounts through a UI the way `network-swap-app` does - explicit `viewer`
+  for a read-only account).
+- **Session expiry.** `SESSION_TIMEOUT_HOURS` (unset = sessions never idle
+  out, matching `network-swap-app`'s own env var of the same name and
+  same default-off behavior) - a session idle longer than that is destroyed
+  on its next request rather than checked on a timer.
+- Verified locally end-to-end for both: a viewer account blocked (403) from
+  creating a drone via curl, its dashboard confirmed to render zero
+  firmware-upload inputs; a session's `last_active_at` backdated past a
+  short `SESSION_TIMEOUT_HOURS` and confirmed to bounce to `/login` on its
+  next request.
+- 9 new tests (admin gating on all three HTTP mutation routes + the
+  WebSocket command path, viewer UI omission, session expiry both with and
+  without the env var set). 58 tests total, all passing (3 runs in a row).
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
 working live-ish demo dashboard with real login and telemetry as it stands.
 
 1. **Single-instance only.** `settings.sockets` (WebSocket broadcast),
-   `FleetSimulator`'s tick gate, and now `RateLimiter` are all in-memory —
-   only work correctly on exactly one running instance. Fine for the
-   current single-instance Render deploy; would need a shared store (Redis,
-   or Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
+   `FleetSimulator`'s tick gate, and `RateLimiter` are all in-memory — only
+   work correctly on exactly one running instance. Fine for the current
+   single-instance Render deploy; would need a shared store (Redis, or
+   Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
    than one instance.
 2. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
    file but never reads or stores it — it just bumps a version string.
    Real firmware handling would need file storage (same R2/Active-Storage-
    style decision `network-swap-app` made for ticket photos) and a lot more
    care given what firmware flashing actually implies for real hardware.
-3. **No roles.** Any logged-in user can do everything (create/delete drones,
-   flash firmware, disable *their own* 2FA) — there's no admin/viewer
-   distinction the way `network-swap-app` has admin/tech. Not needed yet at
-   one-or-two-user scale; worth adding if this gets more users.
-4. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
-   nothing ever reads it to expire an idle session, unlike
-   `network-swap-app`'s `SESSION_TIMEOUT_HOURS`. Sessions live until manual
-   logout or a DB row deletion.

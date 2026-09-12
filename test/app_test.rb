@@ -88,6 +88,48 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, 'Battery'
   end
 
+  def viewer_session
+    User.create(email: 'viewer@example.com', password: 'testpass123', role: 'viewer')
+    session = Rack::Test::Session.new(Rack::MockSession.new(App))
+    session.post '/login', email: 'viewer@example.com', password: 'testpass123'
+    session
+  end
+
+  def test_create_drone_requires_admin
+    session = viewer_session
+    session.post '/api/drones', slug: 'viewer-drone'
+
+    assert_equal 403, session.last_response.status
+    assert_nil Drone.first(slug: 'viewer-drone')
+  end
+
+  def test_delete_drone_requires_admin
+    session = viewer_session
+    session.delete '/api/drones/drone-001'
+
+    assert_equal 403, session.last_response.status
+    refute_nil Drone.first(slug: 'drone-001')
+  end
+
+  def test_flash_firmware_requires_admin
+    session = viewer_session
+    session.post '/api/firmware', drone_id: 'drone-001'
+
+    assert_equal 403, session.last_response.status
+  end
+
+  def test_viewer_can_still_view_the_dashboard
+    session = viewer_session
+    session.get '/'
+
+    assert_equal 200, session.last_response.status
+    # Not a bare "FLASH" check - that string also appears in the always-
+    # present JS *function definition* (only its invocation is
+    # conditional). This id is only emitted by server-rendered admin
+    # controls for this specific seeded drone.
+    refute_includes session.last_response.body, 'fw-drone-001'
+  end
+
   def test_unauthenticated_request_is_redirected_to_login
     # A fresh Rack::Test session with no cookies at all - before_setup's
     # login doesn't apply here.
@@ -219,9 +261,18 @@ class AppTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
+  # A real dispatch has a bound request (and so a resolvable current_user);
+  # App.new! alone doesn't, so these seed @current_user directly to unit-test
+  # the command logic in isolation from session/cookie resolution, which has
+  # its own dedicated tests elsewhere.
+  def ws_app_as(user)
+    App.new!.tap { |a| a.instance_variable_set(:@current_user, user) }
+  end
+
   def test_ws_command_recall_sets_status_to_charging
     drone = Drone.first(slug: 'drone-001')
-    result = App.new!.handle_command({ cmd: 'recall', drone_id: 'drone-001' }.to_json)
+    admin = User.first(email: TEST_EMAIL)
+    result = ws_app_as(admin).handle_command({ cmd: 'recall', drone_id: 'drone-001' }.to_json)
 
     assert result[:applied]
     drone.refresh
@@ -229,10 +280,24 @@ class AppTest < Minitest::Test
   end
 
   def test_ws_command_set_status_validates_status
-    result = App.new!.handle_command({ cmd: 'set_status', drone_id: 'drone-001', status: 'NOT_A_STATUS' }.to_json)
+    admin = User.first(email: TEST_EMAIL)
+    result = ws_app_as(admin).handle_command(
+      { cmd: 'set_status', drone_id: 'drone-001', status: 'NOT_A_STATUS' }.to_json
+    )
 
     refute result[:applied]
     assert_match(/must be one of/, result[:error])
+  end
+
+  def test_ws_command_rejects_non_admin
+    drone = Drone.first(slug: 'drone-001')
+    viewer = User.create(email: 'viewer@example.com', password: 'testpass123', role: 'viewer')
+    result = ws_app_as(viewer).handle_command({ cmd: 'recall', drone_id: 'drone-001' }.to_json)
+
+    refute result[:applied]
+    assert_equal 'admins only', result[:error]
+    drone.refresh
+    refute_equal 'CHARGING', drone.status
   end
 
   def test_ws_command_unknown_drone

@@ -86,6 +86,7 @@ class App < Sinatra::Base
 
     def apply_command(drone, payload)
       return { applied: false, error: 'unknown drone_id' } unless drone
+      return { applied: false, error: 'admins only' } unless admin_access?
 
       case payload['cmd']
       when 'recall'
@@ -207,8 +208,15 @@ class App < Sinatra::Base
     end
 
     def drone_card_html(drone)
+      admin_controls = if current_user&.admin?
+                          "<input id=\"fw-#{h(drone.slug)}\" type=\"file\" accept=\".bin,.hex\">" \
+                            "<button class=\"drone-btn\" onclick=\"uploadFirmware('#{h(drone.slug)}')\">⚡ FLASH</button>" \
+                            "<button class=\"drone-btn danger-btn\" onclick=\"removeDrone('#{h(drone.slug)}')\">🗑 Remove</button>"
+                        else
+                          ''
+                        end
       <<~HTML
-        <div class="drone-card"><h3>🚁 #{h(drone.slug)}</h3><div>Lat/Lon: #{drone.lat}°N, #{drone.lon}°W</div><div class="status #{drone.status == 'ACTIVE' ? 'online' : 'offline'}">#{h(drone.status)}</div><div class="battery"><div class="battery-fill" style="width:#{drone.battery}%"></div><span class="battery-label">#{drone.battery}%</span></div><div>Firmware: #{h(drone.firmware_version)}</div>#{stream_chips_html(drone)}<input id="fw-#{h(drone.slug)}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('#{h(drone.slug)}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/#{h(drone.slug)}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('#{h(drone.slug)}')">🗑 Remove</button></div>
+        <div class="drone-card"><h3>🚁 #{h(drone.slug)}</h3><div>Lat/Lon: #{drone.lat}°N, #{drone.lon}°W</div><div class="status #{drone.status == 'ACTIVE' ? 'online' : 'offline'}">#{h(drone.status)}</div><div class="battery"><div class="battery-fill" style="width:#{drone.battery}%"></div><span class="battery-label">#{drone.battery}%</span></div><div>Firmware: #{h(drone.firmware_version)}</div>#{stream_chips_html(drone)}#{admin_controls}<a class="drone-btn hist-link" href="/drones/#{h(drone.slug)}">📜 History</a></div>
       HTML
     end
 
@@ -276,13 +284,14 @@ class App < Sinatra::Base
         <body>
         <h1>🛰️ THOMAS IT // CYBERPUNK DRONE FLEET #NEON</h1>
         <div id="fleet-status">DRONE FLEET: <span id="fleet-count">#{drones.size}</span> ACTIVE ✓</div>
-        <div class="toolbar"><button class="drone-btn" onclick="addDrone()">➕ Add Drone</button> <button class="drone-btn" onclick="setToken()">🔑 Set API Token</button> <a class="drone-btn hist-link" href="/drones.csv">⬇ Export CSV</a> <a class="drone-btn hist-link" href="/security/two-factor">🔒 Security</a> <form method="post" action="/logout" style="display:inline"><button class="drone-btn" type="submit">🚪 Sign out</button></form></div>
+        <div class="toolbar">#{current_user&.admin? ? '<button class="drone-btn" onclick="addDrone()">➕ Add Drone</button> ' : ''}<button class="drone-btn" onclick="setToken()">🔑 Set API Token</button> <a class="drone-btn hist-link" href="/drones.csv">⬇ Export CSV</a> <a class="drone-btn hist-link" href="/security/two-factor">🔒 Security</a> <form method="post" action="/logout" style="display:inline"><button class="drone-btn" type="submit">🚪 Sign out</button></form></div>
         <div class="top-row">
           <div class="radar-panel"><h3>📡 Radar</h3>#{radar_svg(drones)}</div>
           <div class="alerts-panel"><h3>⚠️ Fleet Alerts</h3><div id="fleet-alerts">#{fleet_alerts_html(drones)}</div></div>
         </div>
         <div class="drone-grid" id="drone-grid">#{cards}</div>
         <script>
+        let isAdmin=#{current_user&.admin? ? 'true' : 'false'};
         let apiToken=localStorage.getItem('drone_api_token')||'';
         function authHeaders(extra){extra=extra||{};if(apiToken)extra['X-Drone-Token']=apiToken;return extra}
         function setToken(){let t=prompt('API token (leave blank to clear):',apiToken||'');if(t===null)return;apiToken=t;localStorage.setItem('drone_api_token',t)}
@@ -294,7 +303,8 @@ class App < Sinatra::Base
         function updateRadar(f){let g=document.getElementById('radar-blips');if(!g)return;g.innerHTML=computeBlips(f).map(b=>`<g class="radar-blip ${b.statusClass}"><circle cx="${b.x}" cy="${b.y}" r="6"/><text x="${Number(b.x)+10}" y="${Number(b.y)+4}">${b.slug}</text></g>`).join('')}
         function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`)}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
-        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams)}<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><a class="drone-btn hist-link" href="/drones/${i}">📜 History</a><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button></div>`}}
+        function adminControlsHtml(i){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
+        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams)}${adminControlsHtml(i)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
         ws.onmessage=e=>{let msg=JSON.parse(e.data);if(msg.type!=='fleet')return;renderFleet(msg.drones)};
         function uploadFirmware(id){let f=document.getElementById('fw-'+id).files[0];if(!f)return alert('Select firmware');let form=new FormData;form.append('firmware',f);form.append('drone_id',id);fetch('/api/firmware',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>alert('Flash: '+(d.status||d.error)))}
         function addDrone(){let slug=prompt('New drone id (e.g. drone-003):');if(!slug)return;let lat=prompt('Latitude:','33.45'),lon=prompt('Longitude:','-112.07');let form=new FormData;form.append('slug',slug);form.append('lat',lat);form.append('lon',lon);fetch('/api/drones',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
@@ -471,6 +481,7 @@ class App < Sinatra::Base
 
   post '/api/firmware' do
     content_type :json
+    require_admin!
     drone_id = params['drone_id']
     halt 400, { error: 'Missing drone_id' }.to_json unless drone_id
 
@@ -490,6 +501,7 @@ class App < Sinatra::Base
 
   post '/api/drones' do
     content_type :json
+    require_admin!
     slug = params['slug'].to_s.strip
     halt 400, { error: 'Missing slug' }.to_json if slug.empty?
     halt 409, { error: 'Drone already exists' }.to_json if Drone.first(slug: slug)
@@ -517,6 +529,7 @@ class App < Sinatra::Base
 
   delete '/api/drones/:slug' do
     content_type :json
+    require_admin!
     drone = Drone.first(slug: params['slug'])
     halt 404, { error: 'Unknown drone' }.to_json unless drone
 

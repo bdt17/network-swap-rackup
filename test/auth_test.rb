@@ -18,6 +18,35 @@ class AuthTest < Minitest::Test
     assert_equal 200, session.last_response.status
   end
 
+  def test_session_expires_after_timeout_hours
+    ENV['SESSION_TIMEOUT_HOURS'] = '1'
+    session = fresh_session
+    session.post '/login', email: TEST_EMAIL, password: TEST_PASSWORD
+    user = User.first(email: TEST_EMAIL)
+    row = Session.where(user_id: user.id).order(Sequel.desc(:id)).first
+    row.update(last_active_at: Time.now - 7200) # 2 hours ago, past the 1-hour timeout
+
+    session.get '/'
+
+    assert_equal 302, session.last_response.status
+    assert_includes session.last_response.location, '/login'
+    assert_nil Session[row.id]
+  ensure
+    ENV.delete('SESSION_TIMEOUT_HOURS')
+  end
+
+  def test_session_does_not_expire_when_timeout_unset
+    session = fresh_session
+    session.post '/login', email: TEST_EMAIL, password: TEST_PASSWORD
+    user = User.first(email: TEST_EMAIL)
+    row = Session.where(user_id: user.id).order(Sequel.desc(:id)).first
+    row.update(last_active_at: Time.now - 7200)
+
+    session.get '/'
+
+    assert_equal 200, session.last_response.status
+  end
+
   def test_login_with_wrong_password_fails
     session = fresh_session
     session.post '/login', email: TEST_EMAIL, password: 'wrong'

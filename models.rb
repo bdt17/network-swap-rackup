@@ -98,10 +98,17 @@ class User < Sequel::Model
   one_to_many :sessions
   one_to_many :backup_codes
 
+  ROLES = %w[admin viewer].freeze
+
   def validate
     super
     errors.add(:email, 'cannot be empty') if email.nil? || email.strip.empty?
     errors.add(:password_digest, 'cannot be empty') if password_digest.nil? || password_digest.empty?
+    errors.add(:role, "must be one of #{ROLES.join(', ')}") if role && !ROLES.include?(role)
+  end
+
+  def admin?
+    role == 'admin'
   end
 
   # Assigning `password=` (rather than password_digest directly) is how
