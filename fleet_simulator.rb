@@ -89,7 +89,7 @@ module FleetSimulator
         # Recorded as its own stream (in addition to living on the drones
         # row) purely so the history page can chart it over time - the
         # drones table only ever holds the current value.
-        StreamReading.record!(drone, 'battery', changes[:battery]) if changes.key?(:battery)
+        StreamReading.record!(drone, 'battery', "#{changes[:battery]}%") if changes.key?(:battery)
         drone.update(changes)
         changed = true
       end

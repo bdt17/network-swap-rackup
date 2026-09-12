@@ -338,7 +338,9 @@ class App < Sinatra::Base
     end
 
     def history_page(drone)
-      stream_label = ->(name) { FleetSimulator::STREAM_LABELS[name] || name }
+      stream_label = lambda do |name|
+        FleetSimulator::STREAM_LABELS[name] || FleetSimulator::CHART_STREAMS.dig(name, :label) || name
+      end
       events = (drone.firmware_events.map { |e| [e.flashed_at, "Firmware #{h(e.from_version)} → #{h(e.to_version)}"] } +
                  drone.command_events.map { |e| [e.received_at, "Command: #{h(e.raw_payload)}"] } +
                  drone.stream_readings.map { |r| [r.recorded_at, "#{h(stream_label.call(r.stream_name))}: #{h(r.value)}"] }
