@@ -99,37 +99,104 @@ Verified end-to-end by hand this session: booted the app for real (not just
 the test client), hit every HTTP route with `curl`, and ran a real
 `faye-websocket` client against a live Puma-served instance — confirmed the
 initial fleet push on connect *and* a live broadcast of a firmware flash to
-an already-connected client.
+an already-connected client. Also confirmed against the deployed Render
+instance itself (not just locally): `/health`, homepage rendering, a real
+firmware version bump, the unknown-drone 404, and a real `wss://` client
+receiving both the initial fleet push and a live broadcast of an
+HTTP-triggered flash.
+
+## Phase 2 — Fleet realism, real commands, fleet management, login + MFA — DONE (2026-09-12)
+
+- **Live fleet simulator** (`fleet_simulator.rb`). A background `Thread`,
+  started from `config.ru` (not `app.rb`, so requiring it for tests doesn't
+  spin one up), ticks every `SIMULATOR_TICK_SECONDS` (default 6): drains
+  battery while a drone is flying, drifts its lat/lon slightly, auto-recalls
+  it to `CHARGING` at ≤15% battery, recharges it back to `ACTIVE`, and leaves
+  `MAINTENANCE` drones alone. Broadcasts the updated fleet after any tick
+  that actually changed something. Verified locally by watching a drone's
+  battery/position actually change over several ticks with zero manual
+  action, and confirmed the same fleet-hash the simulator writes is what the
+  already-existing `/` page and WebSocket broadcast read — no separate state.
+- **Real WebSocket commands.** `handle_command`/`apply_command` now support
+  `recall` (→ `CHARGING`), `resume` (→ `ACTIVE`), and `set_status` (any of
+  `Drone::STATUSES`, rejecting anything else with a real error message
+  instead of silently no-op'ing). Every command is still logged to
+  `command_events` regardless of outcome; a command that actually changed
+  state triggers `broadcast_fleet!` so every connected viewer sees it, not
+  just whoever sent it.
+- **Fleet management.** `POST /api/drones` (create — validates a non-empty,
+  unique slug) and `DELETE /api/drones/:slug` (destroy — cascades its
+  firmware/command history via the existing FK `on_delete` rules) replace
+  the fixed two-drone fleet. The dashboard has "➕ Add Drone" / "🗑 Remove"
+  buttons (`prompt()`/`confirm()`-based, consistent with the existing
+  `uploadFirmware` style — no build step added).
+- **Per-drone history page.** `GET /drones/:slug` renders the drone's
+  `firmware_events` + `command_events` as one time-ordered timeline. Linked
+  from every drone card ("📜 History").
+- **Login + two-factor auth**, mirroring the pattern already proven in
+  `network-swap-app`: bcrypt-hashed passwords (`User#password=`/`#authenticate`),
+  a `sessions` table holding an opaque token (the cookie itself only carries
+  that token, not any session data), and TOTP two-factor via `rotp` +
+  `rqrcode` (QR enrollment, 10 one-time hashed backup codes shown once).
+  `bin/create_user` / `bin/disable_mfa` are the break-glass scripts (this app
+  has no `rake`, unlike the sibling repo, so these are plain Ruby instead of
+  rake tasks). A global `before` filter requires a logged-in session for
+  every route except `/login`, `/two-factor-challenge`, and `/health` —
+  **except** a route matched by a configured `DRONE_API_TOKEN` (unchanged
+  from Phase 1: opt-in, inert unless set), so scripts/curl can still hit the
+  mutating API endpoints without a browser session. The "landing page" is
+  the login form itself (`GET /login` when logged out) rather than a
+  separate marketing page — kept in scope; a real landing page is easy to
+  add later if this needs one.
+- **Tests.** 26 total (`test/run.rb` runs every `*_test.rb` — a plain
+  `ruby a_test.rb b_test.rb` silently only runs the first file, since Ruby
+  treats the second as an ARGV string). New coverage: create/delete drone,
+  the history page, all three WebSocket commands (called directly via
+  `App.new!` — the bang version, since `App.new` returns Sinatra's
+  Rack-middleware wrapper, not an instance you can call helpers on), the
+  token-bypasses-login path, login success/failure, the full 2FA
+  enroll → confirm → logout → challenge round-trip (using a real generated
+  TOTP code, not a stub), a wrong-code rejection, a backup code working
+  exactly once, and disabling 2FA requiring the password. `BCrypt::Engine.cost
+  = 4` in `test_helper.rb` keeps bcrypt's deliberately-slow hashing from
+  making every login-per-test add ~300ms.
+- **Real bug caught by the tests, not just written correctly the first
+  time:** `ROTP::TOTP` has no `otpauth_uri` method — the real one is
+  `provisioning_uri`. Caught immediately because the 2FA enrollment test
+  actually renders the page and asserts on it, rather than mocking TOTP out.
 
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
-working demo/dashboard as it stands.
+working live-ish demo dashboard with real login as it stands.
 
-1. **The "fleet" isn't real.** `drone-001`/`drone-002` are seed data with
-   fixed lat/lon; nothing ever moves them, drains their battery, or changes
-   their status — there's no actual drone (or simulator) feeding this app
-   real telemetry. Before this is more than a static demo, decide what the
-   data source actually is: real hardware (DJI SDK or similar), a simulated
-   flight-path generator, or manual operator input.
-2. **WebSocket commands don't do anything yet.** Inbound messages are logged
-   to `command_events` and acked, but nothing acts on them — there's no
-   defined command vocabulary (e.g. "recall," "set patrol route," "change
-   status"). Worth defining once there's a real fleet to command.
-3. **Single-process broadcast only.** `settings.sockets` is an in-memory
-   array — `broadcast_fleet!` only reaches sockets connected to the *same*
-   process. Fine for one Render instance; would need a pub/sub layer (Redis,
-   or Postgres `LISTEN`/`NOTIFY`) the moment this runs on more than one
-   instance.
-4. **No auth.** The dashboard and `/api/firmware` are wide open to anyone
-   with the URL. Fine for an internal demo; worth a token-in-URL scheme
-   (`network-swap-app`'s `/assistant/:token` pattern is a reusable model) or
-   real login before this is anything more than that.
-5. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
+1. **Single-process broadcast and simulator both.** `settings.sockets` is an
+   in-memory array, and the fleet simulator is a plain `Thread` in the same
+   process — both only work correctly on exactly one running instance. Fine
+   for the current single-instance Render deploy; would need a pub/sub layer
+   (Redis, or Postgres `LISTEN`/`NOTIFY`) for broadcast and some kind of
+   leader-election or external scheduler for the simulator the moment this
+   runs on more than one instance.
+2. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
    file but never reads or stores it — it just bumps a version string.
    Real firmware handling would need file storage (same R2/Active-Storage-
    style decision `network-swap-app` made for ticket photos) and a lot more
    care given what firmware flashing actually implies for real hardware.
-6. **No CI.** `network-swap-app` has a GitHub Actions workflow running tests
+3. **No CI.** `network-swap-app` has a GitHub Actions workflow running tests
    + Brakeman + bundler-audit on every push; this repo has none yet. Worth
-   copying that pattern once this app has more than a handful of routes.
+   copying that pattern now that there's a real auth surface to keep
+   regression-tested on every push.
+4. **No roles.** Any logged-in user can do everything (create/delete drones,
+   flash firmware, disable *their own* 2FA) — there's no admin/viewer
+   distinction the way `network-swap-app` has admin/tech. Not needed yet at
+   one-or-two-user scale; worth adding if this gets more users.
+5. **No login rate limiting.** `network-swap-app` rate-limits its public
+   mutating endpoints; `/login` and `/two-factor-challenge` here don't have
+   that yet, so they're brute-forceable at whatever rate an attacker can hit
+   the network with. Worth adding (Rack::Attack or a hand-rolled
+   `Rails.cache`-style counter, same idea Phase 30 of the sibling app used
+   for its daily request cap) before this is exposed somewhere that matters.
+6. **Session cookie has no expiry.** `sessions.last_active_at` is tracked but
+   nothing ever reads it to expire an idle session, unlike
+   `network-swap-app`'s `SESSION_TIMEOUT_HOURS`. Sessions live until manual
+   logout or a DB row deletion.

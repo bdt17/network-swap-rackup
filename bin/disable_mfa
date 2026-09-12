@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+# Break-glass: turns off 2FA for a user locked out of their authenticator app
+# (and clears their backup codes). Usage: bin/disable_mfa you@example.com
+require 'bundler/setup'
+require_relative '../models'
+
+email = ARGV[0]
+
+if email.nil?
+  warn 'Usage: bin/disable_mfa <email>'
+  exit 1
+end
+
+user = User.first(email: email.downcase.strip)
+unless user
+  warn "No such user: #{email}"
+  exit 1
+end
+
+user.update(otp_secret: nil, otp_enabled: false)
+BackupCode.where(user_id: user.id).delete
+puts "2FA disabled for #{email}"

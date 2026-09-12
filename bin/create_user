@@ -1,0 +1,25 @@
+#!/usr/bin/env ruby
+# Creates a login user for the drone dashboard, or resets an existing one's
+# password. Usage: bin/create_user you@example.com 'a-strong-password'
+require 'bundler/setup'
+require_relative '../models'
+
+email = ARGV[0]
+password = ARGV[1]
+
+if email.nil? || password.nil?
+  warn 'Usage: bin/create_user <email> <password>'
+  exit 1
+end
+
+email = email.downcase.strip
+user = User.first(email: email)
+
+if user
+  user.password = password
+  user.save
+  puts "Updated password for #{email}"
+else
+  User.create(email: email, password: password)
+  puts "Created user #{email}"
+end

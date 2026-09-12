@@ -9,6 +9,10 @@ gem 'sinatra', '~> 4.1', require: 'sinatra/base'
 gem 'sequel', '~> 5.87'
 gem 'faye-websocket'   # WS for live fleet updates
 gem 'json'
+gem 'bcrypt', '~> 3.1'      # password hashing
+gem 'rotp', '~> 6.3'        # TOTP for two-factor auth
+gem 'rqrcode', '~> 2.2'     # QR codes for 2FA enrollment
+gem 'rack-session', '~> 2.1' # short-lived pending-2FA state (real login state is the sessions table, not this)
 
 group :production do
   gem 'pg', '~> 1.5'
