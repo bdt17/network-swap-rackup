@@ -206,8 +206,14 @@ class App < Sinatra::Base
     rescue StandardError
       false
     end
+    # simulator/connected_sockets are diagnostic-only, added while chasing a
+    # production bug where the simulator's own ticks never reach connected
+    # WebSocket clients even though the DB writes it makes are visibly
+    # happening (confirmed identical code works locally) - see NEXT_STEPS.md.
+    simulator = defined?(FleetSimulator) ? FleetSimulator.status : { started: false, note: 'not loaded' }
     { ok: db_ok, uptime_s: (Time.now - START_TIME).to_i, requests: REQUEST_COUNT.value,
-      fleet_size: Drone.count, db: db_ok }.to_json
+      fleet_size: Drone.count, db: db_ok, connected_sockets: settings.sockets.size,
+      simulator: simulator }.to_json
   end
 
   get '/drones/:slug' do

@@ -19,12 +19,32 @@ module FleetSimulator
     return if @started
 
     @started = true
+    @tick_count = 0
+    @last_tick_at = nil
+    @last_error = nil
     @thread = Thread.new do
       loop do
         sleep TICK_SECONDS
         tick!(&broadcaster)
       end
+    rescue StandardError => e
+      # Belt and suspenders: tick! already rescues per-tick errors so the
+      # loop keeps going, but if something outside that (e.g. in `loop`
+      # itself) ever raised, the thread would otherwise die silently and
+      # every symptom would look identical to "the simulator just stopped."
+      @last_error = "loop crashed: #{e.class}: #{e.message}"
+      warn "FleetSimulator thread died: #{e.class}: #{e.message}"
     end
+  end
+
+  def self.status
+    {
+      started: !!@started,
+      thread_alive: @thread&.alive? || false,
+      tick_count: @tick_count || 0,
+      last_tick_at: @last_tick_at&.iso8601,
+      last_error: @last_error
+    }
   end
 
   def self.tick!
@@ -36,8 +56,11 @@ module FleetSimulator
       drone.update(changes)
       changed = true
     end
+    @tick_count = (@tick_count || 0) + 1
+    @last_tick_at = Time.now
     yield if changed && block_given?
   rescue StandardError => e
+    @last_error = "#{e.class}: #{e.message}"
     warn "FleetSimulator tick failed: #{e.class}: #{e.message}"
   end
 
