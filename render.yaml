@@ -1,9 +1,13 @@
+databases:
+  - name: drone_db
+    plan: free
+
 services:
   - type: web
     name: cyberpunk-drone-c2
     env: ruby
-    buildCommand: bundle install
-    startCommand: bundle exec rackup config.ru -p $PORT -o 0.0.0.0 -s webrick
+    buildCommand: bundle install && bundle exec sequel -m db/migrations "$DATABASE_URL"
+    startCommand: bundle exec rackup config.ru -p $PORT -o 0.0.0.0 -s puma
     envVars:
       - key: DATABASE_URL
         fromDatabase:

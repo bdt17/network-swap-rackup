@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Runs pending Sequel migrations against $DATABASE_URL, or the local sqlite
+# dev DB if that's unset. Usage: bin/migrate
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+RACK_ENV="${RACK_ENV:-development}"
+DB_URL="${DATABASE_URL:-sqlite://db/${RACK_ENV}.sqlite3}"
+
+mkdir -p db
+bundle exec sequel -m db/migrations "$DB_URL"
