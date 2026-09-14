@@ -332,6 +332,37 @@ and so never exercised the code path that broke), all passing.
   WebSocket command path, viewer UI omission, session expiry both with and
   without the env var set). 58 tests total, all passing (3 runs in a row).
 
+## Phase 8 — Real firmware file storage — DONE (2026-09-14)
+
+The upload UI always looked real (a file picker, a FLASH button that built
+real `FormData`) but the server never read `params['firmware']` at all -
+every flash just bumped a version string regardless of what was picked.
+
+- `firmware_events` gained `filename`/`content_type`/`data` (`File` column
+  type - `bytea` on Postgres, `BLOB` on sqlite, portable across both).
+  Stored directly in Postgres rather than R2/S3: unlike `network-swap-app`'s
+  ticket photos (real photos, meaningfully large, no size cap chosen
+  deliberately), firmware images are small binary blobs with a sensible
+  cap, so this needed no new infrastructure or env vars to ship working.
+- `POST /api/firmware` now validates the extension (`.bin`/`.hex`) and size
+  (≤8MB) before storing, with a real 422 for either violation instead of
+  silently accepting anything.
+- `GET /drones/:slug/firmware/:event_id/download` serves the exact bytes
+  back, linked from the history page next to each flash that has one.
+- **Self-limiting like `StreamReading`, but split differently:** the full
+  from/to-version audit trail stays forever (it's tiny, text-only) - only
+  the actual binary blobs get pruned, keeping just the most recent 10 per
+  drone, so a demo app doesn't accumulate unbounded binary storage from
+  repeated flashes while still keeping its complete version history intact.
+- Verified for real, not just via tests: a real `curl -F` multipart upload
+  against a live local instance, downloaded it back, and diffed the bytes
+  against the original file - identical. Also hand-verified the wrong-
+  extension rejection with a real request.
+- 5 new tests (upload + download round-trip with byte-for-byte comparison,
+  wrong extension, oversized file, downloading when no file was ever
+  attached, blob pruning beyond the keep limit). 63 tests total, all
+  passing across 3 repeated runs.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -342,9 +373,5 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    work correctly on exactly one running instance. Fine for the current
    single-instance Render deploy; would need a shared store (Redis, or
    Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
-   than one instance.
-2. **Firmware "flashing" is fake.** The upload UI accepts a `.bin`/`.hex`
-   file but never reads or stores it — it just bumps a version string.
-   Real firmware handling would need file storage (same R2/Active-Storage-
-   style decision `network-swap-app` made for ticket photos) and a lot more
-   care given what firmware flashing actually implies for real hardware.
+   than one instance. The only item left on this list, since Phase 8
+   closed out firmware storage.

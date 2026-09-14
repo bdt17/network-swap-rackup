@@ -351,7 +351,14 @@ class App < Sinatra::Base
       stream_label = lambda do |name|
         FleetSimulator::STREAM_LABELS[name] || FleetSimulator::CHART_STREAMS.dig(name, :label) || name
       end
-      events = (drone.firmware_events.map { |e| [e.flashed_at, "Firmware #{h(e.from_version)} → #{h(e.to_version)}"] } +
+      firmware_link = lambda do |e|
+        return '' unless e.data
+
+        " · <a href=\"/drones/#{h(drone.slug)}/firmware/#{e.id}/download\">⬇ #{h(e.filename)}</a>"
+      end
+      events = (drone.firmware_events.map do |e|
+                  [e.flashed_at, "Firmware #{h(e.from_version)} → #{h(e.to_version)}#{firmware_link.call(e)}"]
+                end +
                  drone.command_events.map { |e| [e.received_at, "Command: #{h(e.raw_payload)}"] } +
                  drone.stream_readings.map { |r| [r.recorded_at, "#{h(stream_label.call(r.stream_name))}: #{h(r.value)}"] }
                ).sort_by { |t, _| t }.reverse.first(50)
@@ -488,15 +495,46 @@ class App < Sinatra::Base
     drone = Drone.first(slug: drone_id)
     halt 404, { error: 'Unknown drone' }.to_json unless drone
 
+    upload = params['firmware']
+    file_attrs = {}
+    if upload
+      filename = upload[:filename].to_s
+      ext = File.extname(filename).downcase
+      unless FirmwareEvent::ALLOWED_EXTENSIONS.include?(ext)
+        halt 422, { error: "Firmware file must be one of: #{FirmwareEvent::ALLOWED_EXTENSIONS.join(', ')}" }.to_json
+      end
+
+      bytes = upload[:tempfile].read
+      if bytes.bytesize > FirmwareEvent::MAX_FILE_SIZE
+        halt 422, { error: "Firmware file must be under #{FirmwareEvent::MAX_FILE_SIZE / (1024 * 1024)}MB" }.to_json
+      end
+
+      file_attrs = { filename: filename, content_type: upload[:type], data: Sequel.blob(bytes) }
+    end
+
     from_version = drone.firmware_version
     to_version = bump_version(from_version)
     drone.update(firmware_version: to_version)
-    FirmwareEvent.create(drone_id: drone.id, from_version: from_version, to_version: to_version,
-                          flashed_at: Time.now)
+    FirmwareEvent.create({ drone_id: drone.id, from_version: from_version, to_version: to_version,
+                            flashed_at: Time.now }.merge(file_attrs))
+    FirmwareEvent.prune_blobs!(drone.id)
 
     broadcast_fleet!
 
-    { status: 'flashed', drone: drone.slug, version: to_version }.to_json
+    { status: 'flashed', drone: drone.slug, version: to_version, file: file_attrs[:filename] }.to_json
+  end
+
+  get '/drones/:slug/firmware/:event_id/download' do
+    drone = Drone.first(slug: params['slug'])
+    halt 404, 'Drone not found' unless drone
+
+    event = FirmwareEvent.first(id: params['event_id'], drone_id: drone.id)
+    halt 404, 'Firmware file not available (never uploaded, or pruned - only the most recent ' \
+              "#{FirmwareEvent::KEEP_BLOBS_PER_DRONE} per drone are kept)" unless event&.data
+
+    content_type(event.content_type || 'application/octet-stream')
+    attachment(event.filename || 'firmware.bin')
+    event.data.to_s
   end
 
   post '/api/drones' do

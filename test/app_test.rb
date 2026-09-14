@@ -174,6 +174,75 @@ class AppTest < Minitest::Test
     assert_equal 'Missing drone_id', JSON.parse(last_response.body)['error']
   end
 
+  def fixture_path(name)
+    File.expand_path("fixtures/#{name}", __dir__)
+  end
+
+  def test_firmware_upload_is_stored_and_downloadable
+    drone = Drone.first(slug: 'drone-001')
+    file = Rack::Test::UploadedFile.new(fixture_path('sample.bin'), 'application/octet-stream')
+
+    post '/api/firmware', drone_id: 'drone-001', firmware: file
+
+    assert_equal 200, last_response.status
+    body = JSON.parse(last_response.body)
+    assert_equal 'sample.bin', body['file']
+
+    event = FirmwareEvent.order(Sequel.desc(:id)).first(drone_id: drone.id)
+    refute_nil event.data
+    assert_equal 'sample.bin', event.filename
+
+    get "/drones/drone-001/firmware/#{event.id}/download"
+
+    assert_equal 200, last_response.status
+    assert_equal File.read(fixture_path('sample.bin')), last_response.body
+    assert_includes last_response.headers['Content-Disposition'], 'sample.bin'
+  end
+
+  def test_firmware_upload_rejects_wrong_extension
+    file = Rack::Test::UploadedFile.new(fixture_path('not_firmware.txt'), 'text/plain')
+
+    post '/api/firmware', drone_id: 'drone-001', firmware: file
+
+    assert_equal 422, last_response.status
+    assert_match(/must be one of/, JSON.parse(last_response.body)['error'])
+  end
+
+  def test_firmware_upload_rejects_oversized_file
+    original = FirmwareEvent::MAX_FILE_SIZE
+    FirmwareEvent.send(:remove_const, :MAX_FILE_SIZE)
+    FirmwareEvent.const_set(:MAX_FILE_SIZE, 10) # 10 bytes, smaller than the fixture
+    file = Rack::Test::UploadedFile.new(fixture_path('sample.bin'), 'application/octet-stream')
+
+    post '/api/firmware', drone_id: 'drone-001', firmware: file
+
+    assert_equal 422, last_response.status
+    assert_match(/must be under/, JSON.parse(last_response.body)['error'])
+  ensure
+    FirmwareEvent.send(:remove_const, :MAX_FILE_SIZE)
+    FirmwareEvent.const_set(:MAX_FILE_SIZE, original)
+  end
+
+  def test_download_404s_when_no_file_was_ever_attached
+    post '/api/firmware', drone_id: 'drone-001' # no file
+    event = FirmwareEvent.order(Sequel.desc(:id)).first(drone_id: Drone.first(slug: 'drone-001').id)
+
+    get "/drones/drone-001/firmware/#{event.id}/download"
+
+    assert_equal 404, last_response.status
+  end
+
+  def test_firmware_blobs_are_pruned_beyond_the_keep_limit
+    drone = Drone.first(slug: 'drone-001')
+    (FirmwareEvent::KEEP_BLOBS_PER_DRONE + 3).times do
+      file = Rack::Test::UploadedFile.new(fixture_path('sample.bin'), 'application/octet-stream')
+      post '/api/firmware', drone_id: 'drone-001', firmware: file
+    end
+
+    with_blobs = FirmwareEvent.where(drone_id: drone.id).exclude(data: nil).count
+    assert_equal FirmwareEvent::KEEP_BLOBS_PER_DRONE, with_blobs
+  end
+
   def test_unknown_route_returns_404
     get '/nope'
 

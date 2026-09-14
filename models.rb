@@ -42,6 +42,26 @@ end
 
 class FirmwareEvent < Sequel::Model
   many_to_one :drone
+
+  MAX_FILE_SIZE = 8 * 1024 * 1024 # 8MB - generous for real embedded firmware images
+  ALLOWED_EXTENSIONS = %w[.bin .hex].freeze
+  KEEP_BLOBS_PER_DRONE = 10
+
+  # The full from/to-version audit trail is kept forever (it's tiny, just
+  # text); only the actual uploaded bytes are pruned, so a demo/small-scale
+  # app doesn't accumulate unbounded binary storage from repeated flashes.
+  # Mirrors StreamReading's self-limiting-on-write pattern.
+  def self.prune_blobs!(drone_id)
+    keep_ids = where(drone_id: drone_id)
+               .exclude(data: nil)
+               .reverse_order(:flashed_at)
+               .limit(KEEP_BLOBS_PER_DRONE)
+               .select_map(:id)
+    return if keep_ids.empty?
+
+    where(drone_id: drone_id).exclude(id: keep_ids).exclude(data: nil)
+                              .update(data: nil, filename: nil, content_type: nil)
+  end
 end
 
 class CommandEvent < Sequel::Model
