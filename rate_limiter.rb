@@ -8,7 +8,13 @@
 module RateLimiter
   LIMITS = {
     login: { max: 10, within: 180 },
-    two_factor: { max: 10, within: 180 }
+    two_factor: { max: 10, within: 180 },
+    # Keyed by drone slug (not IP) in practice - the thing worth protecting
+    # is a single drone's feed/the fleet-wide broadcast it triggers, not a
+    # particular caller. Generous enough for a real drone reporting every
+    # few seconds; tight enough that a misbehaving or compromised
+    # credential can't flood the fleet broadcast unbounded.
+    telemetry: { max: 60, within: 60 }
   }.freeze
 
   @mutex = Mutex.new

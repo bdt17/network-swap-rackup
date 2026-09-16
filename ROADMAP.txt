@@ -1,0 +1,47 @@
+cyberpunk-drone-c2 — candidate future phases
+(quick-reference list; full rationale for each lives in NEXT_STEPS.md
+under "Known gaps / candidate next steps" — keep both in sync if this
+list changes)
+
+1. Single-instance only
+   settings.sockets (WebSocket broadcast), FleetSimulator's tick gate, and
+   RateLimiter are all in-memory - only correct on exactly one running
+   instance. Would need Redis or Postgres LISTEN/NOTIFY to run on more
+   than one instance.
+
+2. Per-drone ingestion credentials
+   DRONE_API_TOKEN is one shared secret for the whole fleet and grants
+   full admin access, not just telemetry posting. A per-drone token
+   (drones.token_digest) would scope a credential to one drone and let it
+   be rotated/revoked independently.
+
+3. Rate-limit telemetry ingestion — DONE, Phase 11 (2026-09-16)
+   POST /api/drones/:slug/telemetry now throttled to 60 posts/60s per
+   drone slug via RateLimiter's new :telemetry bucket. See NEXT_STEPS.md.
+
+4. Admin-configurable alert thresholds
+   Battery/camera/link-signal alert conditions are hardcoded constants.
+   No way to say "alert if thermal_cam exceeds 60" without a code deploy.
+   An alert_rules table (stream_name, operator, threshold) would
+   generalize this to any stream a drone actually reports.
+
+5. Drone-declared stream schema
+   Stale-feed detection and chart units only apply after a stream has
+   reported at least once - no way to flag "this drone was supposed to
+   report vibration and never has." A per-drone manifest (expected stream
+   names + units) registered at provisioning time would close that gap.
+
+6. Outbound alert delivery
+   Alerts only ever appear inside the dashboard's own panel - nobody is
+   notified unless they're looking at the page. A webhook/Slack/email
+   push on a *new* alert would close the loop for real operational use.
+
+7. Firmware integrity verification
+   POST /api/firmware validates extension and size but not authenticity -
+   nothing stops a malicious .bin from being "flashed" if it's under 8MB.
+   A required checksum or signature would close that gap.
+
+8. Bulk drone provisioning
+   POST /api/drones and GET /drones.csv handle one drone and read-only
+   export respectively - no CSV/bulk *import* counterpart for standing up
+   a larger fleet at once.

@@ -5,6 +5,7 @@ require 'rack/utils'
 require 'faye/websocket'
 require_relative 'models'
 require_relative 'db/seeds'
+require_relative 'rate_limiter'
 
 Faye::WebSocket.load_adapter('rack')
 
@@ -630,6 +631,10 @@ class App < Sinatra::Base
     require_admin!
     drone = Drone.first(slug: params['slug'])
     halt 404, { error: 'Unknown drone' }.to_json unless drone
+
+    if RateLimiter.exceeded?(:telemetry, drone.slug)
+      halt 429, { error: 'Too many telemetry posts for this drone, slow down' }.to_json
+    end
 
     begin
       payload = JSON.parse(request.body.read)

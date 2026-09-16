@@ -478,6 +478,34 @@ visibility into that sensor entirely and don't know it.
   "FLASH" button text. Fixed to assert the positive "All systems nominal"
   state instead. 78 tests total, all passing.
 
+## Phase 11 — Rate-limit telemetry ingestion — DONE (2026-09-16)
+
+Item 3 off the candidate list (`ROADMAP.txt`), picked first over the other
+open items because it's the tightest-scoped and lowest-risk: a near-direct
+reuse of `RateLimiter` (Phase 6) rather than a new credential model
+(item 2) or new infrastructure (item 1's multi-instance support) that
+deserve their own discussion first.
+
+- **New `:telemetry` bucket** in `RateLimiter::LIMITS` (60 requests / 60
+  seconds), keyed by **drone slug**, not caller IP like `:login`/
+  `:two_factor` - the thing worth protecting here is a single drone's feed
+  (and the fleet-wide broadcast every successful post triggers), not a
+  particular network origin. `POST /api/drones/:slug/telemetry` checks it
+  right after confirming the drone exists, a real 429 past the limit.
+- `app.rb` now requires `rate_limiter` directly rather than relying on
+  `auth.rb` happening to load it first (true today per `config.ru`'s
+  require order, but the route body referencing `RateLimiter` is a real
+  dependency of `app.rb` itself, so it shouldn't depend on load-order
+  coincidence from another file).
+- Verified for real, not just via tests: booted locally and sent 61 rapid
+  telemetry POSTs with a real drone token via curl - the first 60 came
+  back 200, the 61st came back 429, matching the unit-level expectation
+  exactly.
+- 2 new tests (`RateLimiter`'s own bucket behavior - limit, independent
+  per-drone bucketing; and a real end-to-end hit against the route
+  confirming both the 429 and that a *different* drone's own bucket is
+  untouched). 80 tests total, all passing.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -497,12 +525,7 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    credential to exactly one drone's telemetry endpoint and let it be
    rotated or revoked independently, without touching every other drone or
    the operator-facing admin surface.
-3. **Rate-limit telemetry ingestion.** `POST /api/drones/:slug/telemetry`
-   has no throttle beyond the per-request validation - a misbehaving or
-   compromised credential could flood it (and the fleet-wide WebSocket
-   broadcast every successful call triggers) with no limit. `RateLimiter`
-   already exists from Phase 6 and is a near-direct reuse, keyed by
-   drone slug instead of login IP.
+~~3. Rate-limit telemetry ingestion~~ — **done, Phase 11.**
 4. **Admin-configurable alert thresholds.** Battery/camera/link-signal
    alert conditions are hardcoded constants in `fleet_alerts`. Now that a
    drone can report arbitrary numeric streams (Phase 9), there's no way to

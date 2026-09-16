@@ -433,6 +433,21 @@ class AppTest < Minitest::Test
     assert_equal 422, last_response.status
   end
 
+  def test_telemetry_ingest_rate_limits_per_drone
+    body = { streams: { 'x' => '1' } }.to_json
+    60.times do
+      post '/api/drones/drone-001/telemetry', body, { 'CONTENT_TYPE' => 'application/json' }
+      assert_equal 200, last_response.status
+    end
+
+    post '/api/drones/drone-001/telemetry', body, { 'CONTENT_TYPE' => 'application/json' }
+    assert_equal 429, last_response.status
+
+    # A different drone's own limit is untouched.
+    post '/api/drones/drone-002/telemetry', body, { 'CONTENT_TYPE' => 'application/json' }
+    assert_equal 200, last_response.status
+  end
+
   def test_telemetry_ingest_requires_admin
     session = viewer_session
     session.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,

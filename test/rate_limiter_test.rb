@@ -23,6 +23,15 @@ class RateLimiterTest < Minitest::Test
     refute RateLimiter.exceeded?(:two_factor, 'shared-ip')
   end
 
+  def test_telemetry_bucket_has_its_own_higher_limit
+    59.times { refute RateLimiter.exceeded?(:telemetry, 'drone-001') }
+    refute RateLimiter.exceeded?(:telemetry, 'drone-001') # 60th: still allowed, now at the limit
+    assert RateLimiter.exceeded?(:telemetry, 'drone-001') # 61st: over it
+
+    # A different drone's own bucket is untouched.
+    refute RateLimiter.exceeded?(:telemetry, 'drone-002')
+  end
+
   def test_old_attempts_outside_the_window_do_not_count
     key = %i[login old-ip]
     hits = RateLimiter.instance_variable_get(:@hits)
