@@ -107,6 +107,29 @@ class App < Sinatra::Base
       halt 403, { error: 'Admins only' }.to_json unless admin_access?
     end
 
+    # A per-drone token (Drone#token_digest, issued via
+    # POST /api/drones/:slug/rotate_token) only ever authorizes telemetry
+    # for *that* drone - deliberately never folded into admin_access?,
+    # which gates the fleet-wide admin surface (create/delete drones,
+    # firmware, WS commands). A leaked scoped token should compromise at
+    # most one drone's telemetry feed, not the whole fleet.
+    def valid_drone_telemetry_token?(drone)
+      return false unless drone
+
+      provided = request.env['HTTP_X_DRONE_TOKEN'] || params['token']
+      drone.telemetry_token_valid?(provided)
+    end
+
+    # Only the telemetry route accepts a scoped per-drone token in place of
+    # a login - matched directly against the path here (rather than
+    # relying on Sinatra's route params, which the global `before` filter
+    # runs ahead of) since this must run before request dispatch decides
+    # anything.
+    def telemetry_path_drone
+      match = request.path_info.match(%r{\A/api/drones/([^/]+)/telemetry\z})
+      match && Drone.first(slug: match[1])
+    end
+
     def pending_mfa_user
       return nil unless session[:pending_user_id]
       return nil if session[:pending_expires_at].to_i < Time.now.to_i
@@ -236,6 +259,7 @@ class App < Sinatra::Base
   before do
     next if PUBLIC_PATHS.include?(request.path_info)
     next if valid_api_token?
+    next if valid_drone_telemetry_token?(telemetry_path_drone)
 
     require_login!
   end

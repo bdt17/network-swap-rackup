@@ -468,6 +468,91 @@ class AppTest < Minitest::Test
     end
   end
 
+  def test_rotate_token_requires_admin
+    session = viewer_session
+    session.post '/api/drones/drone-001/rotate_token'
+
+    assert_equal 403, session.last_response.status
+    assert_nil Drone.first(slug: 'drone-001').token_digest
+  end
+
+  def test_rotate_token_issues_a_working_scoped_credential
+    post '/api/drones/drone-001/rotate_token'
+
+    assert_equal 200, last_response.status
+    body = JSON.parse(last_response.body)
+    token = body['token']
+    refute_nil token
+
+    drone = Drone.first(slug: 'drone-001')
+    refute_nil drone.token_digest
+    refute_equal token, drone.token_digest # only the digest is stored, never the plaintext
+
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    logged_out.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,
+                     { 'CONTENT_TYPE' => 'application/json', 'HTTP_X_DRONE_TOKEN' => token }
+
+    assert_equal 200, logged_out.last_response.status
+  end
+
+  def test_rotate_token_invalidates_the_previous_token
+    post '/api/drones/drone-001/rotate_token'
+    old_token = JSON.parse(last_response.body)['token']
+    post '/api/drones/drone-001/rotate_token'
+
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    logged_out.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,
+                     { 'CONTENT_TYPE' => 'application/json', 'HTTP_X_DRONE_TOKEN' => old_token }
+
+    refute_equal 200, logged_out.last_response.status
+  end
+
+  def test_drone_token_does_not_authorize_a_different_drones_telemetry
+    post '/api/drones/drone-001/rotate_token'
+    token = JSON.parse(last_response.body)['token']
+
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    logged_out.post '/api/drones/drone-002/telemetry', { streams: { 'x' => '1' } }.to_json,
+                     { 'CONTENT_TYPE' => 'application/json', 'HTTP_X_DRONE_TOKEN' => token }
+
+    refute_equal 200, logged_out.last_response.status
+  end
+
+  def test_drone_token_does_not_grant_fleet_wide_admin_access
+    post '/api/drones/drone-001/rotate_token'
+    token = JSON.parse(last_response.body)['token']
+
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    logged_out.post '/api/drones', { slug: 'sneaky' }, { 'HTTP_X_DRONE_TOKEN' => token }
+
+    refute_equal 201, logged_out.last_response.status
+    assert_nil Drone.first(slug: 'sneaky')
+  end
+
+  def test_revoke_token_requires_admin
+    post '/api/drones/drone-001/rotate_token'
+    session = viewer_session
+    session.delete '/api/drones/drone-001/token'
+
+    assert_equal 403, session.last_response.status
+    refute_nil Drone.first(slug: 'drone-001').token_digest
+  end
+
+  def test_revoke_token_disables_it
+    post '/api/drones/drone-001/rotate_token'
+    token = JSON.parse(last_response.body)['token']
+    delete '/api/drones/drone-001/token'
+
+    assert_equal 200, last_response.status
+    assert_nil Drone.first(slug: 'drone-001').token_digest
+
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    logged_out.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,
+                     { 'CONTENT_TYPE' => 'application/json', 'HTTP_X_DRONE_TOKEN' => token }
+
+    refute_equal 200, logged_out.last_response.status
+  end
+
   def test_history_page_404s_for_unknown_drone
     get '/drones/does-not-exist'
 

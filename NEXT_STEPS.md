@@ -506,6 +506,62 @@ deserve their own discussion first.
   confirming both the 429 and that a *different* drone's own bucket is
   untouched). 80 tests total, all passing.
 
+## Phase 12 — Per-drone ingestion credentials — DONE (2026-09-16)
+
+Item 2 off the candidate list - the highest-value remaining item, since
+`DRONE_API_TOKEN` (Phase 9) is one shared secret for the *entire fleet*
+and, because it also satisfies `admin_access?`, a single leaked token
+grants full command/firmware/fleet-management rights, not just telemetry
+posting for the drone it was meant for.
+
+- **`drones.token_digest`** (migration 011, nullable - existing drones
+  have no scoped credential until an admin issues one). `Drone.hash_token`
+  (SHA-256, no salt) mirrors `BackupCode.hash_code`'s own reasoning: a
+  high-entropy generated credential, not a human-memorized password, so
+  bcrypt's deliberate slowness buys nothing here.
+- **`POST /api/drones/:slug/rotate_token`** (admin-only) issues a fresh
+  `SecureRandom.hex(24)` token, returned in the response body exactly
+  once - like the 2FA backup codes, only its digest is ever persisted, so
+  it can't be recovered later, only rotated again. **`DELETE
+  /api/drones/:slug/token`** (admin-only) revokes it outright.
+- **Strictly scoped, by design - never folded into `admin_access?`.** A
+  new `valid_drone_telemetry_token?(drone)` helper (auth.rb) only ever
+  authorizes `POST /api/drones/:slug/telemetry` for *that exact drone* -
+  checked directly against `request.path_info` in the global `before`
+  filter (ahead of Sinatra's own route-param binding, which hasn't
+  happened yet at that point in dispatch) so a valid scoped token can skip
+  `require_login!` the same way `DRONE_API_TOKEN` already does, without
+  ever satisfying `require_admin!`/`admin_access?` for anything else. A
+  token for drone-001 posting telemetry for drone-002, or trying to hit
+  `DELETE /api/drones/drone-002`, is rejected exactly like an unauthenticated
+  request would be.
+- **Dashboard gets Issue/Rotate/Revoke Token admin buttons**, mirroring
+  the FLASH/Remove pattern - `Drone#to_fleet_json` gained a `has_token`
+  boolean (not sensitive - just presence, never the digest or plaintext)
+  so both the server-rendered and live WebSocket-updated card show the
+  right button set, per the same server/WS-parity rule used everywhere
+  else in this app. A new token is shown once via `alert()`, consistent
+  with how every other one-shot result (flash status, create/delete
+  errors) is already surfaced in this app's deliberately build-step-free
+  frontend.
+- Verified for real against a live local instance with **no
+  `DRONE_API_TOKEN` configured at all**, to isolate the new scoped-token
+  path from the pre-existing fleet-wide one: logged in, rotated a token
+  for drone-001, then - from a completely logged-out request with no
+  cookie - posted telemetry for drone-001 successfully (200), confirmed
+  the *same* token was rejected for drone-002's telemetry and for
+  `DELETE /api/drones/drone-002` (both redirected to login, same as any
+  unauthenticated request), then revoked it and confirmed the old token
+  stopped working. Also caught a verification-methodology gotcha, not an
+  app bug: a naive `grep` across the whole rendered page matched "Revoke
+  Token" from the page's own always-present JS template source, not an
+  actually-rendered button - scoping the grep to only the server-rendered
+  drone cards (excluding `<script>`) showed the real, correct state.
+- 8 new tests (rotate/revoke admin-gating, a rotated token actually
+  working end-to-end, rotating invalidating the previous token, scoping
+  to one drone's telemetry only, confirming no fleet-wide admin access,
+  revoke disabling the token). 87 tests total, all passing.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -517,14 +573,7 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    single-instance Render deploy; would need a shared store (Redis, or
    Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
    than one instance.
-2. **Per-drone ingestion credentials.** `DRONE_API_TOKEN` (Phase 9) is one
-   shared secret for the whole fleet, and since it also satisfies
-   `require_admin!`, a leaked token grants full command/firmware/fleet-
-   management access, not just telemetry posting. A `drones.token_digest`
-   column (bcrypt or SHA-256, same pattern as `BackupCode`) would scope a
-   credential to exactly one drone's telemetry endpoint and let it be
-   rotated or revoked independently, without touching every other drone or
-   the operator-facing admin surface.
+~~2. Per-drone ingestion credentials~~ — **done, Phase 12.**
 ~~3. Rate-limit telemetry ingestion~~ — **done, Phase 11.**
 4. **Admin-configurable alert thresholds.** Battery/camera/link-signal
    alert conditions are hardcoded constants in `fleet_alerts`. Now that a

@@ -2,6 +2,7 @@ require 'sinatra/base'
 require 'json'
 require 'csv'
 require 'rack/utils'
+require 'securerandom'
 require 'faye/websocket'
 require_relative 'models'
 require_relative 'db/seeds'
@@ -241,6 +242,8 @@ class App < Sinatra::Base
       admin_controls = if current_user&.admin?
                           "<input id=\"fw-#{h(drone.slug)}\" type=\"file\" accept=\".bin,.hex\">" \
                             "<button class=\"drone-btn\" onclick=\"uploadFirmware('#{h(drone.slug)}')\">⚡ FLASH</button>" \
+                            "<button class=\"drone-btn\" onclick=\"rotateToken('#{h(drone.slug)}')\">🔑 #{drone.token_digest ? 'Rotate' : 'Issue'} Token</button>" \
+                            "#{drone.token_digest ? "<button class=\"drone-btn danger-btn\" onclick=\"revokeToken('#{h(drone.slug)}')\">🚫 Revoke Token</button>" : ''}" \
                             "<button class=\"drone-btn danger-btn\" onclick=\"removeDrone('#{h(drone.slug)}')\">🗑 Remove</button>"
                         else
                           ''
@@ -337,12 +340,14 @@ class App < Sinatra::Base
         function formatAge(s){return s<60?`${Math.round(s)}s`:`${Math.round(s/60)}m`}
         function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
-        function adminControlsHtml(i){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
-        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
+        function adminControlsHtml(i,hasToken){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn" onclick="rotateToken('${i}')">🔑 ${hasToken?'Rotate':'Issue'} Token</button>${hasToken?`<button class="drone-btn danger-btn" onclick="revokeToken('${i}')">🚫 Revoke Token</button>`:''}<button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
+        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i,d.has_token)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
         ws.onmessage=e=>{let msg=JSON.parse(e.data);if(msg.type!=='fleet')return;renderFleet(msg.drones)};
         function uploadFirmware(id){let f=document.getElementById('fw-'+id).files[0];if(!f)return alert('Select firmware');let form=new FormData;form.append('firmware',f);form.append('drone_id',id);fetch('/api/firmware',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>alert('Flash: '+(d.status||d.error)))}
         function addDrone(){let slug=prompt('New drone id (e.g. drone-003):');if(!slug)return;let lat=prompt('Latitude:','33.45'),lon=prompt('Longitude:','-112.07');let form=new FormData;form.append('slug',slug);form.append('lat',lat);form.append('lon',lon);fetch('/api/drones',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
         function removeDrone(id){if(!confirm('Remove '+id+'? This deletes its history too.'))return;fetch('/api/drones/'+id,{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
+        function rotateToken(id){if(!confirm('Issue a new telemetry token for '+id+'? Any existing token for it stops working immediately.'))return;fetch('/api/drones/'+id+'/rotate_token',{method:'POST',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);alert('New token for '+id+' (shown once, save it now):\n\n'+d.token)})}
+        function revokeToken(id){if(!confirm('Revoke the telemetry token for '+id+'? It will need admin access or a freshly issued token afterward.'))return;fetch('/api/drones/'+id+'/token',{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
         </script>
         </body>
         </html>
@@ -623,14 +628,19 @@ class App < Sinatra::Base
   # for one) push its own labeled sensor readings, distinct from the four
   # channels FleetSimulator fakes. Body: { "streams": { "thermal_cam": "42C",
   # "gps_fix": "3D", ... } } - a batch in one call since a real drone reports
-  # several sensors at once, not one HTTP round-trip per value. Gated the
-  # same way as /api/firmware: DRONE_API_TOKEN lets a headless script post
-  # without a browser session; a logged-in viewer is still blocked.
+  # several sensors at once, not one HTTP round-trip per value. Authorized
+  # by either admin_access? (an admin session, or the fleet-wide
+  # DRONE_API_TOKEN - same as /api/firmware) or a per-drone token scoped to
+  # exactly this drone (Drone#token_digest, via
+  # POST /api/drones/:slug/rotate_token) - a logged-in viewer, or a scoped
+  # token for a *different* drone, is still blocked.
   post '/api/drones/:slug/telemetry' do
     content_type :json
-    require_admin!
     drone = Drone.first(slug: params['slug'])
     halt 404, { error: 'Unknown drone' }.to_json unless drone
+    unless admin_access? || valid_drone_telemetry_token?(drone)
+      halt 403, { error: 'Admins only, or a valid token for this drone' }.to_json
+    end
 
     if RateLimiter.exceeded?(:telemetry, drone.slug)
       halt 429, { error: 'Too many telemetry posts for this drone, slow down' }.to_json
@@ -662,6 +672,36 @@ class App < Sinatra::Base
     broadcast_fleet!
 
     { status: 'recorded', drone: drone.slug, streams: streams.keys }.to_json
+  end
+
+  # Issues (or replaces) a drone-scoped telemetry credential. The plaintext
+  # token is returned exactly once, like the 2FA backup codes - only its
+  # SHA-256 digest is ever stored, so this can't be recovered later, only
+  # rotated again. require_admin! (not the narrower scoped-token check)
+  # since minting a new credential is itself a fleet-management action.
+  post '/api/drones/:slug/rotate_token' do
+    content_type :json
+    require_admin!
+    drone = Drone.first(slug: params['slug'])
+    halt 404, { error: 'Unknown drone' }.to_json unless drone
+
+    token = SecureRandom.hex(24)
+    drone.update(token_digest: Drone.hash_token(token))
+    broadcast_fleet!
+
+    { status: 'rotated', drone: drone.slug, token: token }.to_json
+  end
+
+  delete '/api/drones/:slug/token' do
+    content_type :json
+    require_admin!
+    drone = Drone.first(slug: params['slug'])
+    halt 404, { error: 'Unknown drone' }.to_json unless drone
+
+    drone.update(token_digest: nil)
+    broadcast_fleet!
+
+    { status: 'revoked', drone: drone.slug }.to_json
   end
 
   # Sinatra runs this for *every* response that ends up with a 404 status -

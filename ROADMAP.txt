@@ -9,11 +9,10 @@ list changes)
    instance. Would need Redis or Postgres LISTEN/NOTIFY to run on more
    than one instance.
 
-2. Per-drone ingestion credentials
-   DRONE_API_TOKEN is one shared secret for the whole fleet and grants
-   full admin access, not just telemetry posting. A per-drone token
-   (drones.token_digest) would scope a credential to one drone and let it
-   be rotated/revoked independently.
+2. Per-drone ingestion credentials — DONE, Phase 12 (2026-09-16)
+   drones.token_digest + POST .../rotate_token + DELETE .../token. Scoped
+   strictly to that drone's telemetry endpoint, never satisfies
+   admin_access?. See NEXT_STEPS.md.
 
 3. Rate-limit telemetry ingestion — DONE, Phase 11 (2026-09-16)
    POST /api/drones/:slug/telemetry now throttled to 60 posts/60s per

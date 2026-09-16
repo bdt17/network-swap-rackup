@@ -40,12 +40,30 @@ class Drone < Sequel::Model
       firmware: { version: firmware_version },
       streams: streams.transform_values { |r| r[:value] },
       stream_sources: streams.transform_values { |r| r[:source] },
-      stream_ages_s: streams.transform_values { |r| (now - r[:recorded_at]).round }
+      stream_ages_s: streams.transform_values { |r| (now - r[:recorded_at]).round },
+      has_token: !token_digest.nil?
     }
   end
 
   def self.fleet_hash
     all.each_with_object({}) { |d, h| h[d.slug] = d.to_fleet_json }
+  end
+
+  # A per-drone telemetry credential - deliberately separate from
+  # DRONE_API_TOKEN, which also satisfies admin_access? (full fleet
+  # management). This only ever authorizes posting telemetry for *this*
+  # drone; app.rb never lets it near admin_access?/require_admin!.
+  # SHA-256 (not bcrypt) matches BackupCode's own choice for the same
+  # reason: a high-entropy generated token, not a human-memorized
+  # password, so bcrypt's deliberate slowness buys nothing here.
+  def self.hash_token(token)
+    Digest::SHA256.hexdigest(token.to_s.strip)
+  end
+
+  def telemetry_token_valid?(provided)
+    return false if token_digest.nil? || provided.to_s.strip.empty?
+
+    self.class.hash_token(provided) == token_digest
   end
 end
 
