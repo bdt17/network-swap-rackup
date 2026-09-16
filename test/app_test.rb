@@ -93,6 +93,123 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, 'All systems nominal'
   end
 
+  def test_create_alert_rule_requires_admin
+    session = viewer_session
+    session.post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'gt', threshold: '60'
+
+    assert_equal 403, session.last_response.status
+    assert_empty AlertRule.all
+  end
+
+  def test_create_global_alert_rule
+    post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'gt', threshold: '60'
+
+    assert_equal 201, last_response.status
+    rule = AlertRule.first
+    assert_nil rule.drone_id
+    assert_equal 'thermal_cam', rule.stream_name
+    assert_equal 60.0, rule.threshold
+  end
+
+  def test_create_drone_scoped_alert_rule
+    drone = Drone.first(slug: 'drone-001')
+    post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'gt', threshold: '60', drone_slug: 'drone-001'
+
+    assert_equal 201, last_response.status
+    assert_equal drone.id, AlertRule.first.drone_id
+  end
+
+  def test_create_alert_rule_rejects_unknown_drone
+    post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'gt', threshold: '60', drone_slug: 'nope'
+
+    assert_equal 404, last_response.status
+  end
+
+  def test_create_alert_rule_rejects_invalid_operator
+    post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'nonsense', threshold: '60'
+
+    assert_equal 422, last_response.status
+  end
+
+  def test_create_alert_rule_rejects_non_numeric_threshold
+    post '/api/alert_rules', stream_name: 'thermal_cam', operator: 'gt', threshold: 'hot'
+
+    assert_equal 422, last_response.status
+  end
+
+  def test_delete_alert_rule_requires_admin
+    rule = AlertRule.create(stream_name: 'x', operator: 'gt', threshold: 1, created_at: Time.now)
+    session = viewer_session
+    session.delete "/api/alert_rules/#{rule.id}"
+
+    assert_equal 403, session.last_response.status
+    refute_nil AlertRule[rule.id]
+  end
+
+  def test_delete_alert_rule
+    rule = AlertRule.create(stream_name: 'x', operator: 'gt', threshold: 1, created_at: Time.now)
+    delete "/api/alert_rules/#{rule.id}"
+
+    assert_equal 200, last_response.status
+    assert_nil AlertRule[rule.id]
+  end
+
+  def test_fleet_alerts_triggers_a_global_rule
+    drone = Drone.first(slug: 'drone-001')
+    AlertRule.create(stream_name: 'thermal_cam', operator: 'gt', threshold: 60, created_at: Time.now)
+    StreamReading.record!(drone, 'thermal_cam', '75C', source: 'live')
+
+    get '/'
+
+    assert_includes last_response.body, 'Thermal Cam &gt; 60.0 (current: 75C)'
+  end
+
+  def test_fleet_alerts_does_not_trigger_below_threshold
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    AlertRule.create(stream_name: 'thermal_cam', operator: 'gt', threshold: 60, created_at: Time.now)
+    StreamReading.record!(drone, 'thermal_cam', '40C', source: 'live')
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_fleet_alerts_scoped_rule_only_applies_to_its_own_drone
+    drone1 = Drone.first(slug: 'drone-001')
+    drone2 = Drone.first(slug: 'drone-002')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    AlertRule.create(drone_id: drone1.id, stream_name: 'thermal_cam', operator: 'gt', threshold: 60,
+                      created_at: Time.now)
+    StreamReading.record!(drone2, 'thermal_cam', '90C', source: 'live') # drone2 - rule doesn't apply here
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_fleet_alerts_does_not_misfire_on_non_numeric_stream
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    AlertRule.create(stream_name: 'camera', operator: 'gt', threshold: 0, created_at: Time.now)
+    StreamReading.record!(drone, 'camera', 'OK')
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_alert_rules_panel_hidden_from_viewers
+    AlertRule.create(stream_name: 'thermal_cam', operator: 'gt', threshold: 60, created_at: Time.now)
+    session = viewer_session
+    session.get '/'
+
+    refute_includes session.last_response.body, 'Alert Rules'
+  end
+
   def test_radar_blips_stay_within_radius_for_far_outliers
     near = Drone.create(slug: 'radar-near', lat: 33.5, lon: (-112.1), battery: 50, status: 'ACTIVE',
                          firmware_version: 'v1')
@@ -361,6 +478,20 @@ class AppTest < Minitest::Test
 
     assert_equal 200, last_response.status
     assert_includes last_response.body, '120m'
+  end
+
+  def test_battery_stream_reading_does_not_duplicate_as_a_chip
+    drone = Drone.first(slug: 'drone-001')
+    # Battery is recorded as its own StreamReading purely so the history
+    # page can chart it (Phase 5) - it already has its own dedicated bar
+    # on the card and must not also show up in the generic stream-chip
+    # list (Phase 9's "show every stream" generalization briefly
+    # regressed this).
+    StreamReading.record!(drone, 'battery', '55%')
+
+    get '/'
+
+    refute_includes last_response.body, 'stream-chip">🔋 Battery'
   end
 
   def test_telemetry_ingest_records_multiple_labeled_streams

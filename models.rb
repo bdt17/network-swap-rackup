@@ -7,6 +7,7 @@ class Drone < Sequel::Model
   one_to_many :firmware_events, order: :flashed_at
   one_to_many :command_events
   one_to_many :stream_readings, order: Sequel.desc(:recorded_at)
+  one_to_many :alert_rules
 
   STATUSES = %w[ACTIVE PATROL_AZ1 PATROL_AZ2 CHARGING OFFLINE MAINTENANCE].freeze
 
@@ -164,6 +165,17 @@ class StreamReading < Sequel::Model
       .all
       .map { |r| { value: r.value.to_s[/-?\d+(\.\d+)?/].to_f, recorded_at: r.recorded_at } }
   end
+
+  # Like the leading-number extraction above, but returns nil (not 0.0) when
+  # there's no number to find - used by AlertRule#triggered?, where treating
+  # a non-numeric status string like "OK" as 0.0 could silently misfire a
+  # threshold rule. numeric_history_for keeps its own 0.0 fallback
+  # unchanged (a chart point has to be *something*); this is a separate,
+  # stricter helper for correctness-sensitive callers.
+  def self.numeric_value(value)
+    match = value.to_s[/-?\d+(\.\d+)?/]
+    match&.to_f
+  end
 end
 
 class User < Sequel::Model
@@ -241,5 +253,50 @@ class ClusterState < Sequel::Model(:cluster_state)
     where(key: key.to_s)
       .where { value <= now.utc.iso8601 }
       .update(value: (now + advance_by).utc.iso8601, updated_at: now) == 1
+  end
+end
+
+# An admin-configured threshold on a named stream - checked alongside the
+# fixed battery/camera/link-signal alerts in App#fleet_alerts. A nil
+# drone_id means "global": checked against every drone that reports this
+# stream_name, not just one.
+class AlertRule < Sequel::Model
+  many_to_one :drone
+
+  OPERATORS = { 'gt' => '>', 'gte' => '≥', 'lt' => '<', 'lte' => '≤' }.freeze
+
+  def validate
+    super
+    errors.add(:stream_name, 'cannot be empty') if stream_name.nil? || stream_name.strip.empty?
+    errors.add(:operator, "must be one of #{OPERATORS.keys.join(', ')}") unless OPERATORS.key?(operator)
+    errors.add(:threshold, 'must be a number') if threshold.nil?
+  end
+
+  # False (never triggered) for a non-numeric reading (e.g. a status
+  # string like "OK") rather than misinterpreting it as 0 - see
+  # StreamReading.numeric_value.
+  def triggered?(raw_value)
+    value = StreamReading.numeric_value(raw_value)
+    return false if value.nil?
+
+    case operator
+    when 'gt' then value > threshold
+    when 'gte' then value >= threshold
+    when 'lt' then value < threshold
+    when 'lte' then value <= threshold
+    end
+  end
+
+  def describe
+    "#{OPERATORS[operator]} #{threshold}"
+  end
+
+  # A drone's applicable rules: its own scoped rules plus every global one.
+  # Deliberately not `where(drone_id: [drone.id, nil])` - SQL's `IN` never
+  # matches NULL (three-valued logic: `NULL IN (1, NULL)` isn't true), so
+  # that would silently exclude every global rule. Confirmed by inspecting
+  # the generated SQL directly rather than assuming Sequel special-cased it.
+  def self.for_drone(drone)
+    where(Sequel.|({ drone_id: drone.id }, { drone_id: nil }))
   end
 end

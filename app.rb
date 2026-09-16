@@ -165,7 +165,11 @@ class App < Sinatra::Base
       return '' if streams.empty?
 
       known = FleetSimulator::STREAM_LABELS.keys
-      ordered_names = known.select { |n| streams.key?(n) } + (streams.keys - known).sort
+      # 'battery' is deliberately excluded even though it's a real stream -
+      # it's recorded purely so the history page can chart it (see
+      # FleetSimulator), and already has its own dedicated bar on the card;
+      # showing it again as a chip here would just duplicate that.
+      ordered_names = known.select { |n| streams.key?(n) } + (streams.keys - known - ['battery']).sort
 
       chips = ordered_names.map do |name|
         reading = streams[name]
@@ -260,6 +264,13 @@ class App < Sinatra::Base
 
           alerts << "🛰️ #{d.slug}: #{stream_label(name)} feed stale (last update #{format_age(age)} ago)"
         end
+
+        AlertRule.for_drone(d).each do |rule|
+          reading = streams[rule.stream_name]
+          next unless reading && rule.triggered?(reading[:value])
+
+          alerts << "⚠️ #{d.slug}: #{stream_label(rule.stream_name)} #{rule.describe} (current: #{reading[:value]})"
+        end
       end
       alerts
     end
@@ -273,6 +284,34 @@ class App < Sinatra::Base
       return '<div class="alert-row alert-ok">✅ All systems nominal.</div>' if alerts.empty?
 
       alerts.map { |a| "<div class=\"alert-row\">#{h(a)}</div>" }.join
+    end
+
+    def alert_rules_html
+      rules = AlertRule.order(:stream_name).all
+      return '<div class="rule-row muted">No rules configured.</div>' if rules.empty?
+
+      rules.map do |r|
+        scope = r.drone ? h(r.drone.slug) : 'any drone'
+        "<div class=\"rule-row\">#{h(stream_label(r.stream_name))} #{h(r.describe)} — #{scope} " \
+          "<button class=\"drone-btn danger-btn\" onclick=\"deleteAlertRule(#{r.id})\">\u{1F5D1}</button></div>"
+      end.join
+    end
+
+    def alert_rules_panel_html
+      return '' unless current_user&.admin?
+
+      "<div class=\"rules-block\"><h4>🔔 Alert Rules</h4><div id=\"alert-rules-list\">#{alert_rules_html}</div>" \
+        "<button class=\"drone-btn\" onclick=\"addAlertRule()\">➕ Add Rule</button></div>"
+    end
+
+    # Embedded once at page render time for the live/WebSocket-updated
+    # alerts panel to re-evaluate against every fresh broadcast - a rule an
+    # admin adds or removes only takes effect for an already-open tab on
+    # its next reload (the same "Set API Token"-style tradeoff already
+    # accepted elsewhere in this deliberately build-step-free frontend),
+    # not instantly like the alerts themselves.
+    def alert_rules_js
+      AlertRule.all.map { |r| { drone_slug: r.drone&.slug, stream: r.stream_name, op: r.operator, threshold: r.threshold } }.to_json
     end
 
     def drone_card_html(drone)
@@ -339,6 +378,11 @@ class App < Sinatra::Base
         @keyframes blip-pulse{0%,100%{opacity:1}50%{opacity:.4}}
         .alert-row{padding:6px 0;border-bottom:1px solid rgba(0,255,204,.15);font-size:.92em}
         .alert-ok{color:#00ff00;border-bottom:none}
+        .rules-block{margin-top:14px;border-top:1px solid rgba(0,255,204,.2);padding-top:10px}
+        .rules-block h4{margin:0 0 6px}
+        .rule-row{padding:4px 0;font-size:.85em;display:flex;align-items:center;gap:8px}
+        .rule-row.muted{color:#888}
+        .rule-row .drone-btn{padding:2px 8px;font-size:.9em;margin:0}
         .drone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;max-width:1200px;margin:0 auto}
         .drone-card{background:rgba(0,255,204,.1);border:2px solid #00ffcc;border-radius:15px;padding:20px;box-shadow:0 10px 30px rgba(0,255,204,.3);transition:all .3s}
         .drone-card:hover{transform:translateY(-6px);box-shadow:0 20px 50px rgba(0,255,204,.5)}
@@ -358,24 +402,28 @@ class App < Sinatra::Base
         <div class="toolbar">#{current_user&.admin? ? '<button class="drone-btn" onclick="addDrone()">➕ Add Drone</button> ' : ''}<button class="drone-btn" onclick="setToken()">🔑 Set API Token</button> <a class="drone-btn hist-link" href="/drones.csv">⬇ Export CSV</a> <a class="drone-btn hist-link" href="/security/two-factor">🔒 Security</a> <form method="post" action="/logout" style="display:inline"><button class="drone-btn" type="submit">🚪 Sign out</button></form></div>
         <div class="top-row">
           <div class="radar-panel"><h3>📡 Radar</h3>#{radar_svg(drones)}</div>
-          <div class="alerts-panel"><h3>⚠️ Fleet Alerts</h3><div id="fleet-alerts">#{fleet_alerts_html(drones)}</div></div>
+          <div class="alerts-panel"><h3>⚠️ Fleet Alerts</h3><div id="fleet-alerts">#{fleet_alerts_html(drones)}</div>#{alert_rules_panel_html}</div>
         </div>
         <div class="drone-grid" id="drone-grid">#{cards}</div>
         <script>
         let isAdmin=#{current_user&.admin? ? 'true' : 'false'};
+        let alertRules=#{alert_rules_js};
+        let opSymbols={gt:'>',gte:'≥',lt:'<',lte:'≤'};
+        let opFns={gt:(a,b)=>a>b,gte:(a,b)=>a>=b,lt:(a,b)=>a<b,lte:(a,b)=>a<=b};
+        function numericValue(v){let m=String(v).match(/-?\\d+(\\.\\d+)?/);return m?parseFloat(m[0]):null}
         let apiToken=localStorage.getItem('drone_api_token')||'';
         function authHeaders(extra){extra=extra||{};if(apiToken)extra['X-Drone-Token']=apiToken;return extra}
         function setToken(){let t=prompt('API token (leave blank to clear):',apiToken||'');if(t===null)return;apiToken=t;localStorage.setItem('drone_api_token',t)}
         let ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/drone'+(apiToken?('?token='+encodeURIComponent(apiToken)):''));
         let streamLabels={camera:'📷 Camera',link_signal:'📶 Link',temperature:'🌡️ Temp',altitude:'📏 Altitude'};
-        function streamLabel(k){return streamLabels[k]||('📡 '+k.replace(/[_.-]+/g,' ').replace(/\b\w/g,c=>c.toUpperCase()))}
-        function streamChipsHtml(streams,sources){if(!streams)return'';sources=sources||{};let known=Object.keys(streamLabels).filter(k=>streams[k]);let rest=Object.keys(streams).filter(k=>!streamLabels[k]).sort();return `<div class="streams">`+known.concat(rest).map(k=>`<span class="stream-chip${sources[k]==='live'?' live':''}">${streamLabel(k)}: ${streams[k]}</span>`).join('')+`</div>`}
+        function streamLabel(k){return streamLabels[k]||('📡 '+k.replace(/[_.-]+/g,' ').replace(/\\b\\w/g,c=>c.toUpperCase()))}
+        function streamChipsHtml(streams,sources){if(!streams)return'';sources=sources||{};let known=Object.keys(streamLabels).filter(k=>streams[k]);let rest=Object.keys(streams).filter(k=>!streamLabels[k]&&k!=='battery').sort();return `<div class="streams">`+known.concat(rest).map(k=>`<span class="stream-chip${sources[k]==='live'?' live':''}">${streamLabel(k)}: ${streams[k]}</span>`).join('')+`</div>`}
         function radarStatusClass(s){if(s==='ACTIVE'||s==='PATROL_AZ1'||s==='PATROL_AZ2')return'blip-active';if(s==='CHARGING')return'blip-charging';if(s==='OFFLINE')return'blip-offline';return'blip-maintenance'}
         function computeBlips(f){let entries=Object.entries(f).filter(([,d])=>d.lat!=null&&d.lon!=null);if(!entries.length)return[];let lats=entries.map(([,d])=>d.lat),lons=entries.map(([,d])=>d.lon);let centerLat=(Math.min(...lats)+Math.max(...lats))/2,centerLon=(Math.min(...lons)+Math.max(...lons))/2;let span=Math.max(Math.max(...lats)-Math.min(...lats),Math.max(...lons)-Math.min(...lons),0.02)*1.4;let radius=130;return entries.map(([slug,d])=>{let dx=(d.lon-centerLon)/span,dy=(d.lat-centerLat)/span;let x=150+dx*radius*2,y=150-dy*radius*2;let dist=Math.sqrt((x-150)**2+(y-150)**2);if(dist>radius){let angle=Math.atan2(y-150,x-150);x=150+radius*Math.cos(angle);y=150+radius*Math.sin(angle)}return{x:x.toFixed(1),y:y.toFixed(1),slug,statusClass:radarStatusClass(d.status)}})}
         function updateRadar(f){let g=document.getElementById('radar-blips');if(!g)return;g.innerHTML=computeBlips(f).map(b=>`<g class="radar-blip ${b.statusClass}"><circle cx="${b.x}" cy="${b.y}" r="6"/><text x="${Number(b.x)+10}" y="${Number(b.y)+4}">${b.slug}</text></g>`).join('')}
         let liveStaleSeconds=#{StreamReading::LIVE_STALE_SECONDS};
         function formatAge(s){return s<60?`${Math.round(s)}s`:`${Math.round(s/60)}m`}
-        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}}return alerts}
+        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}alertRules.forEach(rule=>{if(rule.drone_slug&&rule.drone_slug!==slug)return;let raw=streams[rule.stream];if(raw==null)return;let val=numericValue(raw);if(val==null)return;if(opFns[rule.op](val,rule.threshold))alerts.push(`⚠️ ${slug}: ${streamLabel(rule.stream)} ${opSymbols[rule.op]} ${rule.threshold} (current: ${raw})`)})}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
         function adminControlsHtml(i,hasToken){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn" onclick="rotateToken('${i}')">🔑 ${hasToken?'Rotate':'Issue'} Token</button>${hasToken?`<button class="drone-btn danger-btn" onclick="revokeToken('${i}')">🚫 Revoke Token</button>`:''}<button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
         function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i,d.has_token)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
@@ -383,7 +431,16 @@ class App < Sinatra::Base
         function uploadFirmware(id){let f=document.getElementById('fw-'+id).files[0];if(!f)return alert('Select firmware');let form=new FormData;form.append('firmware',f);form.append('drone_id',id);fetch('/api/firmware',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>alert('Flash: '+(d.status||d.error)))}
         function addDrone(){let slug=prompt('New drone id (e.g. drone-003):');if(!slug)return;let lat=prompt('Latitude:','33.45'),lon=prompt('Longitude:','-112.07');let form=new FormData;form.append('slug',slug);form.append('lat',lat);form.append('lon',lon);fetch('/api/drones',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
         function removeDrone(id){if(!confirm('Remove '+id+'? This deletes its history too.'))return;fetch('/api/drones/'+id,{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
-        function rotateToken(id){if(!confirm('Issue a new telemetry token for '+id+'? Any existing token for it stops working immediately.'))return;fetch('/api/drones/'+id+'/rotate_token',{method:'POST',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);alert('New token for '+id+' (shown once, save it now):\n\n'+d.token)})}
+        function addAlertRule(){
+          let stream=prompt('Stream name (e.g. thermal_cam):');if(!stream)return;
+          let op=prompt('Operator - one of gt, gte, lt, lte:','gt');if(!op||!opSymbols[op])return alert('Operator must be one of: gt, gte, lt, lte');
+          let threshold=prompt('Threshold value:');if(threshold===null||isNaN(parseFloat(threshold)))return alert('Threshold must be a number');
+          let droneSlug=prompt('Drone id to scope this to (leave blank for every drone):','');
+          let form=new FormData;form.append('stream_name',stream);form.append('operator',op);form.append('threshold',threshold);if(droneSlug)form.append('drone_slug',droneSlug);
+          fetch('/api/alert_rules',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);location.reload()})
+        }
+        function deleteAlertRule(id){if(!confirm('Delete this alert rule?'))return;fetch('/api/alert_rules/'+id,{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);location.reload()})}
+        function rotateToken(id){if(!confirm('Issue a new telemetry token for '+id+'? Any existing token for it stops working immediately.'))return;fetch('/api/drones/'+id+'/rotate_token',{method:'POST',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);alert('New token for '+id+' (shown once, save it now):\\n\\n'+d.token)})}
         function revokeToken(id){if(!confirm('Revoke the telemetry token for '+id+'? It will need admin access or a freshly issued token afterward.'))return;fetch('/api/drones/'+id+'/token',{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
         </script>
         </body>
@@ -739,6 +796,44 @@ class App < Sinatra::Base
     broadcast_fleet!
 
     { status: 'revoked', drone: drone.slug }.to_json
+  end
+
+  # Admin-configurable alert thresholds (checked in fleet_alerts alongside
+  # the fixed battery/camera/link-signal rules). drone_slug is optional -
+  # omitted (or blank) makes it a global rule, checked against every drone
+  # that reports this stream_name.
+  post '/api/alert_rules' do
+    content_type :json
+    require_admin!
+
+    drone = nil
+    if params['drone_slug'].to_s.strip != ''
+      drone = Drone.first(slug: params['drone_slug'].to_s.strip)
+      halt 404, { error: 'Unknown drone' }.to_json unless drone
+    end
+
+    rule = AlertRule.new(
+      drone_id: drone&.id,
+      stream_name: params['stream_name'].to_s.strip,
+      operator: params['operator'].to_s.strip,
+      threshold: Float(params['threshold'], exception: false),
+      created_at: Time.now
+    )
+    halt 422, { error: rule.errors.full_messages.join(', ') }.to_json unless rule.valid?
+
+    rule.save
+    status 201
+    { status: 'created', id: rule.id }.to_json
+  end
+
+  delete '/api/alert_rules/:id' do
+    content_type :json
+    require_admin!
+    rule = AlertRule[params['id']]
+    halt 404, { error: 'Unknown rule' }.to_json unless rule
+
+    rule.destroy
+    { status: 'deleted', id: params['id'] }.to_json
   end
 
   # Sinatra runs this for *every* response that ends up with a 404 status -

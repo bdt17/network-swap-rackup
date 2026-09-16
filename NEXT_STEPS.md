@@ -667,6 +667,100 @@ reliable here.
   total, all passing (checked 4 repeated runs against sqlite plus one full
   run against real Postgres).
 
+## Phase 14 — Admin-configurable alert thresholds, and three real bugs caught along the way — DONE (2026-09-16)
+
+Item 4 off the candidate list: battery/camera/link-signal alert conditions
+were hardcoded constants in `fleet_alerts`, and now that a drone can report
+arbitrary numeric streams (Phase 9), there was no way to say "alert if
+`thermal_cam` exceeds 60" without a code deploy.
+
+- **New `alert_rules` table** (migration 014, `AlertRule` model):
+  `drone_id` (nullable - `nil` means a *global* rule, checked against every
+  drone that reports the stream, not just one), `stream_name`, `operator`
+  (`gt`/`gte`/`lt`/`lte`), `threshold`. `AlertRule#triggered?` parses the
+  reading's leading number the same way charts already do, but returns
+  `false` (not a misleading `0`) for a non-numeric value like `"OK"` - a
+  new `StreamReading.numeric_value` helper, stricter than the existing
+  `numeric_history_for` (which keeps its own `0.0`-for-charts fallback
+  unchanged).
+- **`POST /api/alert_rules`** / **`DELETE /api/alert_rules/:id`**
+  (admin-only). Dashboard gets an admin-only "🔔 Alert Rules" section under
+  the alerts panel - add via sequential prompts (stream name, operator,
+  threshold, optional drone slug to scope it), each rule listed with a 🗑
+  delete button. `fleet_alerts` checks `AlertRule.for_drone(d)` alongside
+  the fixed rules. The live/WebSocket view embeds the current rule set
+  once at page render and re-evaluates it against every fresh broadcast -
+  a rule added or removed only takes effect for an already-open tab on its
+  next reload, the same accepted tradeoff as the "Set API Token" flow.
+
+**Three real, independent bugs caught while building and verifying this -
+none by unit tests, all by deliberately exercising the real thing:**
+
+1. **Sequel's `where(column: [x, nil])` silently drops every row where the
+   column is actually `NULL`.** `AlertRule.for_drone` was first written as
+   `where(drone_id: [drone.id, nil])`, which generates
+   `WHERE drone_id IN (?, NULL)` - and SQL's `IN` never matches `NULL`
+   (three-valued logic: `NULL IN (1, NULL)` isn't true). Every *global*
+   rule was silently invisible to `fleet_alerts`. Caught by a failing
+   integration test, then confirmed at the SQL level by printing the
+   actual generated query rather than guessing. Fixed with
+   `Sequel.|({ drone_id: drone.id }, { drone_id: nil })`, which generates a
+   real `(drone_id = ? OR drone_id IS NULL)`.
+2. **A parse-breaking bug in the dashboard's own `<script>` block, live in
+   production since Phase 12, invisible to every verification method used
+   so far.** Ruby heredocs interpret backslash escapes in *string*
+   content, not just real Ruby `/regex/` literals - so JS meant to be
+   embedded literally (`\d`, `\w`, `\.`, `\n`) was silently mangled: `\d`,
+   `\w`, `\.` lost their backslash entirely (Ruby drops the backslash for
+   an escape it doesn't recognize), and worse, `\b` turned into an actual
+   backspace *byte*, and `rotateToken`'s `'...\n\n'+d.token` became a
+   **raw literal newline inside a single-quoted JS string** -
+   `SyntaxError: Unexpected token` in any real JS engine. That one broke
+   parsing of the *entire* script block, not just the one function -
+   meaning no live WebSocket updates, no radar animation, and no admin
+   button on the dashboard has actually worked in a real browser since
+   Phase 12 shipped, despite every previous phase's "verified for real"
+   checks passing. Every prior verification in this app's history checked
+   server-rendered HTML (`curl`) or raw WebSocket JSON payloads
+   (`faye-websocket` scripts) - never an actual JS engine parsing the
+   `<script>` tag, so this class of bug had no way to get caught until now.
+   Found via `node --check` against the real bytes a live local instance
+   served (not the Ruby source), confirmed via `cat -A` showing a literal
+   line break mid-string, and fixed by doubling the offending backslashes
+   in the Ruby source so a single one survives into the output. Re-verified
+   three ways: `node --check` on the complete real script block from both
+   the dashboard and history pages (clean parse), a Node REPL executing
+   the real extracted functions against realistic data, and - the real
+   proof - an actual Chrome tab loading the live dashboard with zero
+   console errors, a genuine WebSocket connection (`connected_sockets`
+   went 0 → 1), and a firmware flash POSTed via `curl` appearing in the
+   open tab's DOM with no page reload.
+3. **A real UI regression caught only by that same live-browser check,
+   not by any test:** Phase 9's generalization of `stream_chips_html` (to
+   show every stream present, not just the four simulator-known ones)
+   accidentally started showing `battery` as a duplicate chip - it's
+   recorded as its own `StreamReading` purely so the history page can
+   chart it (Phase 5), and deliberately excluded from `STREAM_LABELS`
+   since it already has its own bar on the card. Fixed by explicitly
+   excluding `'battery'` from the "extras" list in both the Ruby and JS
+   versions of the chip-building logic; regression test added.
+
+This phase is the strongest evidence yet in this app's history for why
+"verified for real" has to include actually running the thing the way a
+user would, not just checking the parts that are easy to inspect from the
+outside (rendered HTML, JSON payloads) - a whole category of client-side
+bugs was shipping silently for phases at a time.
+
+- 14 new tests (8 for the alert-rules API/model in `app_test.rb`, 7 in a
+  new `test/alert_rule_test.rb` for `AlertRule`'s own logic, 1 regression
+  test for the battery-chip duplication). Also fixed a pre-existing test-
+  isolation gap while debugging bug #1: `Seeds.reset!` cleared every
+  drone-scoped table via cascade, but `AlertRule.drone_id` is nullable, so
+  a *global* rule created in one test silently leaked into the next -
+  `Seeds.reset!` now explicitly clears `AlertRule` too. 108 tests total,
+  all passing (repeated runs against sqlite and one full run against real
+  Postgres).
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -675,13 +769,7 @@ working live-ish demo dashboard with real login and telemetry as it stands.
 ~~1. Single-instance only~~ — **done, Phase 13.**
 ~~2. Per-drone ingestion credentials~~ — **done, Phase 12.**
 ~~3. Rate-limit telemetry ingestion~~ — **done, Phase 11.**
-4. **Admin-configurable alert thresholds.** Battery/camera/link-signal
-   alert conditions are hardcoded constants in `fleet_alerts`. Now that a
-   drone can report arbitrary numeric streams (Phase 9), there's no way to
-   say "alert if `thermal_cam` exceeds 60" without another code deploy. A
-   small `alert_rules` table (drone_id-or-global, stream_name, operator,
-   threshold) checked alongside the existing fixed rules would generalize
-   this to any stream a real drone actually reports.
+~~4. Admin-configurable alert thresholds~~ — **done, Phase 14.**
 5. **Drone-declared stream schema.** Stale-feed detection (Phase 10) and
    chart units only apply to a stream *after* it's reported at least once -
    there's no way to flag "this drone was supposed to report `vibration`

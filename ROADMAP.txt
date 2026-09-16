@@ -20,11 +20,13 @@ list changes)
    POST /api/drones/:slug/telemetry now throttled to 60 posts/60s per
    drone slug via RateLimiter's new :telemetry bucket. See NEXT_STEPS.md.
 
-4. Admin-configurable alert thresholds
-   Battery/camera/link-signal alert conditions are hardcoded constants.
-   No way to say "alert if thermal_cam exceeds 60" without a code deploy.
-   An alert_rules table (stream_name, operator, threshold) would
-   generalize this to any stream a drone actually reports.
+4. Admin-configurable alert thresholds — DONE, Phase 14 (2026-09-16)
+   alert_rules table + POST/DELETE /api/alert_rules, admin UI panel.
+   Also fixed 3 real bugs found while building this: Sequel's
+   where(col: [x, nil]) silently drops NULL rows, a Ruby-heredoc escape
+   bug that broke the ENTIRE dashboard <script> block's parsing in a real
+   browser since Phase 12 (never caught before - see NEXT_STEPS.md), and
+   a battery-stream duplicate-chip regression. See NEXT_STEPS.md.
 
 5. Drone-declared stream schema
    Stale-feed detection and chart units only apply after a stream has

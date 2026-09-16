@@ -21,6 +21,12 @@ module Seeds
   def self.reset!
     CommandEvent.dataset.delete
     FirmwareEvent.dataset.delete
+    # AlertRule.drone_id is nullable (a global rule isn't attached to any
+    # drone), so - unlike StreamReading, whose drone_id is required and
+    # therefore already cascade-deleted below - a global rule would
+    # otherwise survive every drone getting wiped and leak into whichever
+    # test runs next.
+    AlertRule.dataset.delete
     Drone.dataset.delete
     DEFAULT_FLEET.each { |attrs| Drone.create(attrs) }
   end
