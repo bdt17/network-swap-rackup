@@ -431,6 +431,53 @@ way the simulated ones are.
   live-preempts-simulated behavior and its own expiry). 75 tests total, all
   passing.
 
+## Phase 10 — Stale live-feed alerts — DONE (2026-09-15)
+
+Phase 9 let a real drone push its own labeled telemetry, but gave no signal
+if that feed ever stopped - a `source: 'live'` reading just sits there as
+the permanent "latest value" with nothing indicating it's gone quiet
+(unlike the four simulator-known streams, which the simulator reclaims and
+keeps fresh forever). For a live-ops dashboard, a silently-dead real feed
+is a more dangerous failure mode than a low battery - it means you've lost
+visibility into that sensor entirely and don't know it.
+
+- **`StreamReading::LIVE_STALE_SECONDS`** (default 120, overridable via
+  `LIVE_STREAM_STALE_SECONDS` - same env-var-override convention as
+  `FleetSimulator::TICK_SECONDS`). `fleet_alerts` now flags any stream
+  whose latest reading has `source: 'live'` and is older than this as
+  `"🛰️ <slug>: <label> feed stale (last update <age> ago)"` - reusing the
+  same `stream_label` fallback labeling from Phase 9, so an ad-hoc stream
+  name still reads clearly in the alert. A `'simulated'`-source stream
+  never triggers this regardless of age, since the simulator itself
+  guarantees freshness for those.
+- **Live WebSocket view mirrors this exactly**, per the same
+  "server-rendered and WS-updated must agree" rule Phase 5 established for
+  the rest of the alerts panel. `Drone#to_fleet_json` gained a third
+  parallel map, `stream_ages_s` (seconds since each stream's last reading,
+  computed fresh per broadcast) alongside the existing `streams`/
+  `stream_sources`, so the page's own JS can compute staleness without
+  needing a client-side clock/timer - it just re-evaluates on every
+  broadcast, which happens roughly every simulator tick regardless of
+  whether the stale stream itself changed.
+- Caught and fixed during manual verification, not by a test: the first
+  version used the same 📡 emoji for both the alert-row prefix and
+  `stream_label`'s own fallback-label prefix for unknown stream names,
+  producing a visibly doubled "📡 ... 📡 Thermal Cam feed stale". Switched
+  the alert prefix to 🛰️ to disambiguate "this is about a drone's feed"
+  from "this stream has no curated label."
+- Verified for real: booted locally with `LIVE_STREAM_STALE_SECONDS=3` for
+  a fast manual check, posted live telemetry via curl, confirmed no alert
+  immediately after, then confirmed `"🛰️ drone-001: 📡 Thermal Cam feed
+  stale (last update 4s ago)"` appeared after waiting past the threshold.
+- 3 new tests (stale live stream flagged, fresh live stream not flagged,
+  stale *simulated* stream never flagged). One of the three caught a real
+  test-writing mistake, not app code: a naive `refute_includes body, "feed
+  stale"` was tripped by the string always being present in the page's own
+  JS `computeAlerts` function source, not by an actual rendered alert - the
+  same gotcha already documented elsewhere in `test/app_test.rb` for the
+  "FLASH" button text. Fixed to assert the positive "All systems nominal"
+  state instead. 78 tests total, all passing.
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a

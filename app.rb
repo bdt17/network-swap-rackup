@@ -212,8 +212,21 @@ class App < Sinatra::Base
 
         signal = streams['link_signal']&.dig(:value)
         alerts << "📶 #{d.slug}: weak signal (#{signal})" if signal && signal.to_s[/-?\d+/].to_i <= -80
+
+        streams.each do |name, reading|
+          next unless reading[:source] == 'live'
+
+          age = Time.now - reading[:recorded_at]
+          next unless age > StreamReading::LIVE_STALE_SECONDS
+
+          alerts << "🛰️ #{d.slug}: #{stream_label(name)} feed stale (last update #{format_age(age)} ago)"
+        end
       end
       alerts
+    end
+
+    def format_age(seconds)
+      seconds < 60 ? "#{seconds.round}s" : "#{(seconds / 60).round}m"
     end
 
     def fleet_alerts_html(drones)
@@ -319,7 +332,9 @@ class App < Sinatra::Base
         function radarStatusClass(s){if(s==='ACTIVE'||s==='PATROL_AZ1'||s==='PATROL_AZ2')return'blip-active';if(s==='CHARGING')return'blip-charging';if(s==='OFFLINE')return'blip-offline';return'blip-maintenance'}
         function computeBlips(f){let entries=Object.entries(f).filter(([,d])=>d.lat!=null&&d.lon!=null);if(!entries.length)return[];let lats=entries.map(([,d])=>d.lat),lons=entries.map(([,d])=>d.lon);let centerLat=(Math.min(...lats)+Math.max(...lats))/2,centerLon=(Math.min(...lons)+Math.max(...lons))/2;let span=Math.max(Math.max(...lats)-Math.min(...lats),Math.max(...lons)-Math.min(...lons),0.02)*1.4;let radius=130;return entries.map(([slug,d])=>{let dx=(d.lon-centerLon)/span,dy=(d.lat-centerLat)/span;let x=150+dx*radius*2,y=150-dy*radius*2;let dist=Math.sqrt((x-150)**2+(y-150)**2);if(dist>radius){let angle=Math.atan2(y-150,x-150);x=150+radius*Math.cos(angle);y=150+radius*Math.sin(angle)}return{x:x.toFixed(1),y:y.toFixed(1),slug,statusClass:radarStatusClass(d.status)}})}
         function updateRadar(f){let g=document.getElementById('radar-blips');if(!g)return;g.innerHTML=computeBlips(f).map(b=>`<g class="radar-blip ${b.statusClass}"><circle cx="${b.x}" cy="${b.y}" r="6"/><text x="${Number(b.x)+10}" y="${Number(b.y)+4}">${b.slug}</text></g>`).join('')}
-        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`)}return alerts}
+        let liveStaleSeconds=#{StreamReading::LIVE_STALE_SECONDS};
+        function formatAge(s){return s<60?`${Math.round(s)}s`:`${Math.round(s/60)}m`}
+        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
         function adminControlsHtml(i){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
         function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}

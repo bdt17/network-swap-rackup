@@ -23,12 +23,15 @@ class Drone < Sequel::Model
     StreamReading.latest_for(id)
   end
 
-  # Shape expected by the frontend's WebSocket handler: { lat:, lon:, battery:, status:, firmware: { version: }, streams: {}, stream_sources: {} }
-  # stream_sources is a parallel name=>'live'/'simulated' map (not nested
+  # Shape expected by the frontend's WebSocket handler: { lat:, lon:, battery:, status:, firmware: { version: }, streams: {}, stream_sources: {}, stream_ages_s: {} }
+  # stream_sources/stream_ages_s are parallel name=>value maps (not nested
   # inside streams) so existing plain-string consumers of `streams` (alert
-  # thresholds, CSV export) don't need to change shape.
+  # thresholds, CSV export) don't need to change shape. stream_ages_s (age
+  # in whole seconds as of this broadcast) lets the live client-side alerts
+  # panel flag a stale live feed without needing its own clock/timers.
   def to_fleet_json
     streams = latest_streams
+    now = Time.now
     {
       lat: lat,
       lon: lon,
@@ -36,7 +39,8 @@ class Drone < Sequel::Model
       status: status,
       firmware: { version: firmware_version },
       streams: streams.transform_values { |r| r[:value] },
-      stream_sources: streams.transform_values { |r| r[:source] }
+      stream_sources: streams.transform_values { |r| r[:source] },
+      stream_ages_s: streams.transform_values { |r| (now - r[:recorded_at]).round }
     }
   end
 
@@ -82,6 +86,13 @@ class StreamReading < Sequel::Model
   many_to_one :drone
 
   MAX_PER_STREAM = 20
+
+  # A 'live' stream (unlike a 'simulated' one, which the simulator keeps
+  # fresh forever) has no guaranteed reporting cadence - a real drone could
+  # stop sending for any reason. If its latest reading is older than this,
+  # the fleet alerts panel flags the feed as stale rather than silently
+  # keeping showing a last-known value with no indication it's gone quiet.
+  LIVE_STALE_SECONDS = Integer(ENV['LIVE_STREAM_STALE_SECONDS'] || 120)
 
   # Ingestion limits for POST /api/drones/:slug/telemetry - generous enough
   # for a real sensor payload, tight enough that one bad client can't wedge

@@ -54,6 +54,45 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, 'camera DEGRADED'
   end
 
+  def test_fleet_alerts_flags_stale_live_stream
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'thermal_cam', '38C', source: 'live')
+    StreamReading.where(drone_id: drone.id, stream_name: 'thermal_cam')
+                 .update(recorded_at: Time.now - StreamReading::LIVE_STALE_SECONDS - 1)
+
+    get '/'
+
+    assert_includes last_response.body, 'Thermal Cam feed stale'
+  end
+
+  def test_fleet_alerts_does_not_flag_fresh_live_stream
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    StreamReading.record!(drone, 'thermal_cam', '38C', source: 'live')
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_fleet_alerts_does_not_flag_stale_simulated_stream
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    StreamReading.record!(drone, 'temperature', '30C') # default source: 'simulated'
+    StreamReading.where(drone_id: drone.id, stream_name: 'temperature')
+                 .update(recorded_at: Time.now - StreamReading::LIVE_STALE_SECONDS - 1)
+
+    get '/'
+
+    # Not a bare "feed stale" refutation - that string also appears in the
+    # always-present JS computeAlerts function definition (only whether it's
+    # actually invoked into an alert row differs), same gotcha as the
+    # existing FLASH-button check elsewhere in this file.
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
   def test_radar_blips_stay_within_radius_for_far_outliers
     near = Drone.create(slug: 'radar-near', lat: 33.5, lon: (-112.1), battery: 50, status: 'ACTIVE',
                          firmware_version: 'v1')
