@@ -129,6 +129,19 @@ curl -X POST http://localhost:4567/api/alert_rules \
   -d "stream_name=thermal_cam" -d "operator=gt" -d "threshold=60"
 ```
 
+### Declaring a stream a drone is expected to report
+
+Registering a stream on a drone's **📋 Expected Streams** panel (on its
+history page) does two things: `fleet_alerts` flags it if that stream never
+shows up at all (not just if it stops, which stale-feed detection already
+covers), and its history chart gets a real unit instead of a blank one.
+
+```
+curl -X POST http://localhost:4567/api/drones/drone-004/stream_specs \
+  -H "X-Drone-Token: $DRONE_API_TOKEN" \
+  -d "stream_name=thermal_cam" -d "unit=C"
+```
+
 ## Environment variables
 
 | Variable | Required? | Purpose |

@@ -761,6 +761,51 @@ bugs was shipping silently for phases at a time.
   all passing (repeated runs against sqlite and one full run against real
   Postgres).
 
+## Phase 15 — Drone-declared stream schema — DONE (2026-09-16)
+
+Item 5 off the candidate list. Stale-feed detection (Phase 10) and
+AlertRule (Phase 14) only ever apply to a stream *after* it's reported at
+least once - neither could flag "this drone was supposed to report
+`vibration` and has never once done so." Ingested numeric streams also had
+no real unit for their history chart (`StreamReading` stores only a value
+string like `"42.7C"`, never a unit).
+
+- **New `stream_specs` table** (migration 015, `StreamSpec` model): a
+  per-drone manifest entry, `drone_id` + `stream_name` + optional `unit`,
+  unique per (drone, stream). Distinct from `AlertRule` - this is a
+  presence/labeling manifest, not a threshold check on a value.
+- **`fleet_alerts` flags a spec whose `stream_name` never appears** in
+  that drone's `latest_streams` at all: `"📋 <slug>: <label> expected but
+  never reported"` - clears itself automatically the moment the stream
+  actually shows up, same as every other alert here (nothing to
+  acknowledge or resolve manually). The live WebSocket view mirrors this
+  via a `streamSpecs` map (drone slug → expected stream names) embedded
+  once at page render, same tradeoff as `alertRules`.
+- **History-page charts use the registered unit** for any ingested stream
+  that has one, instead of the previous blank unit for anything outside
+  `FleetSimulator::CHART_STREAMS`.
+- **Admin-only "📋 Expected Streams" panel added to the per-drone history
+  page** (not the main dashboard - this is inherently per-drone, and the
+  history page is already where a drone's own data lives). Add via two
+  prompts (stream name, optional unit), each listed with a 🗑 delete
+  button. `.rules-block`/`.rule-row` CSS (previously only in the
+  dashboard's own `<style>` block) moved into the shared `base_css` so
+  both pages can use it without duplicating rules - the same
+  don't-duplicate-styling principle Phase 5 already established.
+- Verified for real: booted locally, registered an expected `thermal_cam`
+  stream for drone-001 with unit `C`, confirmed the "expected but never
+  reported" alert appeared; posted real telemetry for it via curl and
+  confirmed the alert cleared on its own; posted a second reading and
+  confirmed the history-page sparkline rendered with the registered unit
+  (`data-value="55.0C"`). Given Phase 14's finding that a browser-breaking
+  bug can hide behind passing server-rendered checks, both the dashboard's
+  and the history page's real served `<script>` blocks were also run
+  through `node --check` before considering this done.
+- 13 new tests (9 in `app_test.rb` for the API/alerts/chart-unit
+  integration, 4 in a new `test/stream_spec_test.rb` for the model's own
+  validation and cascade-delete behavior). 121 tests total, all passing
+  (sqlite + real Postgres).
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
@@ -770,13 +815,7 @@ working live-ish demo dashboard with real login and telemetry as it stands.
 ~~2. Per-drone ingestion credentials~~ — **done, Phase 12.**
 ~~3. Rate-limit telemetry ingestion~~ — **done, Phase 11.**
 ~~4. Admin-configurable alert thresholds~~ — **done, Phase 14.**
-5. **Drone-declared stream schema.** Stale-feed detection (Phase 10) and
-   chart units only apply to a stream *after* it's reported at least once -
-   there's no way to flag "this drone was supposed to report `vibration`
-   and never has." A lightweight per-drone manifest registered at
-   provisioning time (expected stream names + units) would close that gap
-   and let ingested numeric streams get a real chart unit instead of the
-   current blank one.
+~~5. Drone-declared stream schema~~ — **done, Phase 15.**
 6. **Outbound alert delivery.** Every alert (low battery, degraded camera,
    stale live feed) only ever appears inside the dashboard's own panel -
    nobody is notified unless someone is actively looking at the page. A

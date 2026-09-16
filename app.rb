@@ -271,6 +271,12 @@ class App < Sinatra::Base
 
           alerts << "⚠️ #{d.slug}: #{stream_label(rule.stream_name)} #{rule.describe} (current: #{reading[:value]})"
         end
+
+        d.stream_specs.each do |spec|
+          next if streams.key?(spec.stream_name)
+
+          alerts << "📋 #{d.slug}: #{stream_label(spec.stream_name)} expected but never reported"
+        end
       end
       alerts
     end
@@ -304,6 +310,24 @@ class App < Sinatra::Base
         "<button class=\"drone-btn\" onclick=\"addAlertRule()\">➕ Add Rule</button></div>"
     end
 
+    def stream_specs_html(drone)
+      specs = drone.stream_specs.sort_by(&:stream_name)
+      return '<div class="rule-row muted">No expected streams registered.</div>' if specs.empty?
+
+      specs.map do |s|
+        unit = s.unit && !s.unit.empty? ? " (#{h(s.unit)})" : ''
+        "<div class=\"rule-row\">#{h(stream_label(s.stream_name))}#{unit} " \
+          "<button class=\"drone-btn danger-btn\" onclick=\"deleteStreamSpec(#{s.id})\">\u{1F5D1}</button></div>"
+      end.join
+    end
+
+    def stream_specs_panel_html(drone)
+      return '' unless current_user&.admin?
+
+      "<div class=\"rules-block\"><h4>📋 Expected Streams</h4><div id=\"stream-specs-list\">#{stream_specs_html(drone)}</div>" \
+        "<button class=\"drone-btn\" onclick=\"addStreamSpec('#{h(drone.slug)}')\">➕ Add Expected Stream</button></div>"
+    end
+
     # Embedded once at page render time for the live/WebSocket-updated
     # alerts panel to re-evaluate against every fresh broadcast - a rule an
     # admin adds or removes only takes effect for an already-open tab on
@@ -312,6 +336,13 @@ class App < Sinatra::Base
     # not instantly like the alerts themselves.
     def alert_rules_js
       AlertRule.all.map { |r| { drone_slug: r.drone&.slug, stream: r.stream_name, op: r.operator, threshold: r.threshold } }.to_json
+    end
+
+    # { "drone-001" => ["thermal_cam", "vibration"], ... } - lets the live
+    # alerts panel flag "expected but never reported" the same way
+    # fleet_alerts does server-side, without a per-broadcast DB query.
+    def stream_specs_js
+      StreamSpec.all.group_by { |s| s.drone.slug }.transform_values { |specs| specs.map(&:stream_name) }.to_json
     end
 
     def drone_card_html(drone)
@@ -343,6 +374,11 @@ class App < Sinatra::Base
         .hist-link{display:inline-block;text-decoration:none}
         .danger-btn{background:#ff4444;color:#fff}
         .danger-btn:hover{background:#cc0000}
+        .rules-block{margin-top:14px;border-top:1px solid rgba(0,255,204,.2);padding-top:10px}
+        .rules-block h4{margin:0 0 6px}
+        .rule-row{padding:4px 0;font-size:.85em;display:flex;align-items:center;gap:8px}
+        .rule-row.muted{color:#888}
+        .rule-row .drone-btn{padding:2px 8px;font-size:.9em;margin:0}
       CSS
     end
 
@@ -378,11 +414,6 @@ class App < Sinatra::Base
         @keyframes blip-pulse{0%,100%{opacity:1}50%{opacity:.4}}
         .alert-row{padding:6px 0;border-bottom:1px solid rgba(0,255,204,.15);font-size:.92em}
         .alert-ok{color:#00ff00;border-bottom:none}
-        .rules-block{margin-top:14px;border-top:1px solid rgba(0,255,204,.2);padding-top:10px}
-        .rules-block h4{margin:0 0 6px}
-        .rule-row{padding:4px 0;font-size:.85em;display:flex;align-items:center;gap:8px}
-        .rule-row.muted{color:#888}
-        .rule-row .drone-btn{padding:2px 8px;font-size:.9em;margin:0}
         .drone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;max-width:1200px;margin:0 auto}
         .drone-card{background:rgba(0,255,204,.1);border:2px solid #00ffcc;border-radius:15px;padding:20px;box-shadow:0 10px 30px rgba(0,255,204,.3);transition:all .3s}
         .drone-card:hover{transform:translateY(-6px);box-shadow:0 20px 50px rgba(0,255,204,.5)}
@@ -408,6 +439,7 @@ class App < Sinatra::Base
         <script>
         let isAdmin=#{current_user&.admin? ? 'true' : 'false'};
         let alertRules=#{alert_rules_js};
+        let streamSpecs=#{stream_specs_js};
         let opSymbols={gt:'>',gte:'≥',lt:'<',lte:'≤'};
         let opFns={gt:(a,b)=>a>b,gte:(a,b)=>a>=b,lt:(a,b)=>a<b,lte:(a,b)=>a<=b};
         function numericValue(v){let m=String(v).match(/-?\\d+(\\.\\d+)?/);return m?parseFloat(m[0]):null}
@@ -423,7 +455,7 @@ class App < Sinatra::Base
         function updateRadar(f){let g=document.getElementById('radar-blips');if(!g)return;g.innerHTML=computeBlips(f).map(b=>`<g class="radar-blip ${b.statusClass}"><circle cx="${b.x}" cy="${b.y}" r="6"/><text x="${Number(b.x)+10}" y="${Number(b.y)+4}">${b.slug}</text></g>`).join('')}
         let liveStaleSeconds=#{StreamReading::LIVE_STALE_SECONDS};
         function formatAge(s){return s<60?`${Math.round(s)}s`:`${Math.round(s/60)}m`}
-        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}alertRules.forEach(rule=>{if(rule.drone_slug&&rule.drone_slug!==slug)return;let raw=streams[rule.stream];if(raw==null)return;let val=numericValue(raw);if(val==null)return;if(opFns[rule.op](val,rule.threshold))alerts.push(`⚠️ ${slug}: ${streamLabel(rule.stream)} ${opSymbols[rule.op]} ${rule.threshold} (current: ${raw})`)})}return alerts}
+        function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{},sources=d.stream_sources||{},ages=d.stream_ages_s||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`);for(let k in streams){if(sources[k]==='live'&&ages[k]>liveStaleSeconds)alerts.push(`🛰️ ${slug}: ${streamLabel(k)} feed stale (last update ${formatAge(ages[k])} ago)`)}alertRules.forEach(rule=>{if(rule.drone_slug&&rule.drone_slug!==slug)return;let raw=streams[rule.stream];if(raw==null)return;let val=numericValue(raw);if(val==null)return;if(opFns[rule.op](val,rule.threshold))alerts.push(`⚠️ ${slug}: ${streamLabel(rule.stream)} ${opSymbols[rule.op]} ${rule.threshold} (current: ${raw})`)});(streamSpecs[slug]||[]).forEach(name=>{if(streams[name]==null)alerts.push(`📋 ${slug}: ${streamLabel(name)} expected but never reported`)})}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
         function adminControlsHtml(i,hasToken){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn" onclick="rotateToken('${i}')">🔑 ${hasToken?'Rotate':'Issue'} Token</button>${hasToken?`<button class="drone-btn danger-btn" onclick="revokeToken('${i}')">🚫 Revoke Token</button>`:''}<button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
         function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i,d.has_token)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
@@ -503,7 +535,10 @@ class App < Sinatra::Base
       # needing to be registered anywhere first.
       known = FleetSimulator::CHART_STREAMS
       extra = drone.latest_streams.select { |name, r| !known.key?(name) && r[:value].to_s =~ /\A-?\d/ }.keys.sort
-      chart_streams = known.merge(extra.to_h { |name| [name, { label: stream_label(name), unit: '' }] })
+      # A registered StreamSpec (see stream_specs_panel_html) gives an
+      # ad-hoc ingested stream a real chart unit instead of a blank one.
+      units = drone.stream_specs.each_with_object({}) { |s, h| h[s.stream_name] = s.unit if s.unit }
+      chart_streams = known.merge(extra.to_h { |name| [name, { label: stream_label(name), unit: units[name] || '' }] })
 
       charts = chart_streams.map do |name, meta|
         history = StreamReading.numeric_history_for(drone.id, name)
@@ -541,11 +576,21 @@ class App < Sinatra::Base
         <a href="/">&larr; Back to fleet</a>
         <h1>🚁 #{h(drone.slug)} — history</h1>
         <div>Status: #{h(drone.status)} · Battery: #{drone.battery}% · Firmware: #{h(drone.firmware_version)}</div>
+        #{stream_specs_panel_html(drone)}
         <div class="charts-grid">#{charts}</div>
         <div>#{rows}</div>
         </div>
         <div id="chart-tooltip" class="chart-tooltip"></div>
         <script>
+        let apiToken=localStorage.getItem('drone_api_token')||'';
+        function authHeaders(extra){extra=extra||{};if(apiToken)extra['X-Drone-Token']=apiToken;return extra}
+        function addStreamSpec(slug){
+          let stream=prompt('Stream name this drone is expected to report:');if(!stream)return;
+          let unit=prompt('Unit for its chart (optional, e.g. °C):','');
+          let form=new FormData;form.append('stream_name',stream);if(unit)form.append('unit',unit);
+          fetch('/api/drones/'+slug+'/stream_specs',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);location.reload()})
+        }
+        function deleteStreamSpec(id){if(!confirm('Remove this expected stream?'))return;fetch('/api/stream_specs/'+id,{method:'DELETE',headers:authHeaders()}).then(r=>r.json()).then(d=>{if(d.error)return alert('Error: '+d.error);location.reload()})}
         document.querySelectorAll('.spark-pt').forEach(pt=>{
           pt.addEventListener('mousemove', e=>{
             let tip=document.getElementById('chart-tooltip');
@@ -833,6 +878,37 @@ class App < Sinatra::Base
     halt 404, { error: 'Unknown rule' }.to_json unless rule
 
     rule.destroy
+    { status: 'deleted', id: params['id'] }.to_json
+  end
+
+  # A per-drone manifest entry: "this drone is expected to report
+  # stream_name" (optional unit for its history chart). Distinct from
+  # alert_rules above - this is about presence/labeling, not a threshold.
+  post '/api/drones/:slug/stream_specs' do
+    content_type :json
+    require_admin!
+    drone = Drone.first(slug: params['slug'])
+    halt 404, { error: 'Unknown drone' }.to_json unless drone
+
+    spec = StreamSpec.new(drone_id: drone.id, stream_name: params['stream_name'].to_s.strip,
+                           unit: params['unit'].to_s.strip, created_at: Time.now)
+    halt 422, { error: spec.errors.full_messages.join(', ') }.to_json unless spec.valid?
+    if StreamSpec.first(drone_id: drone.id, stream_name: spec.stream_name)
+      halt 409, { error: 'Already registered for this drone' }.to_json
+    end
+
+    spec.save
+    status 201
+    { status: 'created', id: spec.id }.to_json
+  end
+
+  delete '/api/stream_specs/:id' do
+    content_type :json
+    require_admin!
+    spec = StreamSpec[params['id']]
+    halt 404, { error: 'Unknown stream spec' }.to_json unless spec
+
+    spec.destroy
     { status: 'deleted', id: params['id'] }.to_json
   end
 

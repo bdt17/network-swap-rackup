@@ -8,6 +8,7 @@ class Drone < Sequel::Model
   one_to_many :command_events
   one_to_many :stream_readings, order: Sequel.desc(:recorded_at)
   one_to_many :alert_rules
+  one_to_many :stream_specs
 
   STATUSES = %w[ACTIVE PATROL_AZ1 PATROL_AZ2 CHARGING OFFLINE MAINTENANCE].freeze
 
@@ -298,5 +299,20 @@ class AlertRule < Sequel::Model
   # the generated SQL directly rather than assuming Sequel special-cased it.
   def self.for_drone(drone)
     where(Sequel.|({ drone_id: drone.id }, { drone_id: nil }))
+  end
+end
+
+# A per-drone manifest entry: "this drone is expected to report
+# stream_name" (optionally with a real unit for its history chart). Unlike
+# StreamReading (a value that showed up) or AlertRule (a threshold on a
+# value), this exists to make the *absence* of a stream detectable -
+# fleet_alerts flags a spec whose stream_name never appears in the drone's
+# latest_streams at all, not just one that stopped reporting.
+class StreamSpec < Sequel::Model
+  many_to_one :drone
+
+  def validate
+    super
+    errors.add(:stream_name, 'cannot be empty') if stream_name.nil? || stream_name.strip.empty?
   end
 end

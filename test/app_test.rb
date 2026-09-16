@@ -210,6 +210,91 @@ class AppTest < Minitest::Test
     refute_includes session.last_response.body, 'Alert Rules'
   end
 
+  def test_create_stream_spec_requires_admin
+    session = viewer_session
+    session.post '/api/drones/drone-001/stream_specs', stream_name: 'thermal_cam'
+
+    assert_equal 403, session.last_response.status
+    assert_empty StreamSpec.all
+  end
+
+  def test_create_stream_spec
+    drone = Drone.first(slug: 'drone-001')
+    post '/api/drones/drone-001/stream_specs', stream_name: 'thermal_cam', unit: '°C'
+
+    assert_equal 201, last_response.status
+    spec = StreamSpec.first
+    assert_equal drone.id, spec.drone_id
+    assert_equal 'thermal_cam', spec.stream_name
+    assert_equal '°C', spec.unit
+  end
+
+  def test_create_stream_spec_rejects_unknown_drone
+    post '/api/drones/does-not-exist/stream_specs', stream_name: 'thermal_cam'
+
+    assert_equal 404, last_response.status
+  end
+
+  def test_create_stream_spec_rejects_duplicate
+    drone = Drone.first(slug: 'drone-001')
+    StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', created_at: Time.now)
+    post '/api/drones/drone-001/stream_specs', stream_name: 'thermal_cam'
+
+    assert_equal 409, last_response.status
+  end
+
+  def test_delete_stream_spec_requires_admin
+    drone = Drone.first(slug: 'drone-001')
+    spec = StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', created_at: Time.now)
+    session = viewer_session
+    session.delete "/api/stream_specs/#{spec.id}"
+
+    assert_equal 403, session.last_response.status
+    refute_nil StreamSpec[spec.id]
+  end
+
+  def test_delete_stream_spec
+    drone = Drone.first(slug: 'drone-001')
+    spec = StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', created_at: Time.now)
+    delete "/api/stream_specs/#{spec.id}"
+
+    assert_equal 200, last_response.status
+    assert_nil StreamSpec[spec.id]
+  end
+
+  def test_fleet_alerts_flags_a_stream_expected_but_never_reported
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', created_at: Time.now)
+
+    get '/'
+
+    assert_includes last_response.body, 'Thermal Cam expected but never reported'
+  end
+
+  def test_fleet_alerts_does_not_flag_a_stream_once_it_has_reported
+    drone = Drone.first(slug: 'drone-001')
+    Drone.each { |d| d.update(battery: 80, status: 'ACTIVE') }
+    StreamReading.dataset.delete
+    StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', created_at: Time.now)
+    StreamReading.record!(drone, 'thermal_cam', '42C', source: 'live')
+
+    get '/'
+
+    assert_includes last_response.body, 'All systems nominal'
+  end
+
+  def test_history_chart_uses_registered_unit_for_an_ingested_stream
+    drone = Drone.first(slug: 'drone-001')
+    StreamSpec.create(drone_id: drone.id, stream_name: 'thermal_cam', unit: 'XU', created_at: Time.now)
+    2.times { |i| StreamReading.record!(drone, 'thermal_cam', "#{40 + i}C", source: 'live') }
+
+    get '/drones/drone-001'
+
+    assert_includes last_response.body, 'XU'
+  end
+
   def test_radar_blips_stay_within_radius_for_far_outliers
     near = Drone.create(slug: 'radar-near', lat: 33.5, lon: (-112.1), battery: 50, status: 'ACTIVE',
                          firmware_version: 'v1')

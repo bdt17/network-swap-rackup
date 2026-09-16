@@ -28,11 +28,10 @@ list changes)
    browser since Phase 12 (never caught before - see NEXT_STEPS.md), and
    a battery-stream duplicate-chip regression. See NEXT_STEPS.md.
 
-5. Drone-declared stream schema
-   Stale-feed detection and chart units only apply after a stream has
-   reported at least once - no way to flag "this drone was supposed to
-   report vibration and never has." A per-drone manifest (expected stream
-   names + units) registered at provisioning time would close that gap.
+5. Drone-declared stream schema — DONE, Phase 15 (2026-09-16)
+   stream_specs table + admin panel on the per-drone history page.
+   fleet_alerts flags a registered stream that's never reported at all;
+   charts use the registered unit. See NEXT_STEPS.md.
 
 6. Outbound alert delivery
    Alerts only ever appear inside the dashboard's own panel - nobody is
