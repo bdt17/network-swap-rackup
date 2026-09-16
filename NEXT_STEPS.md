@@ -488,5 +488,48 @@ working live-ish demo dashboard with real login and telemetry as it stands.
    work correctly on exactly one running instance. Fine for the current
    single-instance Render deploy; would need a shared store (Redis, or
    Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
-   than one instance. The only item left on this list, since Phase 8
-   closed out firmware storage.
+   than one instance.
+2. **Per-drone ingestion credentials.** `DRONE_API_TOKEN` (Phase 9) is one
+   shared secret for the whole fleet, and since it also satisfies
+   `require_admin!`, a leaked token grants full command/firmware/fleet-
+   management access, not just telemetry posting. A `drones.token_digest`
+   column (bcrypt or SHA-256, same pattern as `BackupCode`) would scope a
+   credential to exactly one drone's telemetry endpoint and let it be
+   rotated or revoked independently, without touching every other drone or
+   the operator-facing admin surface.
+3. **Rate-limit telemetry ingestion.** `POST /api/drones/:slug/telemetry`
+   has no throttle beyond the per-request validation - a misbehaving or
+   compromised credential could flood it (and the fleet-wide WebSocket
+   broadcast every successful call triggers) with no limit. `RateLimiter`
+   already exists from Phase 6 and is a near-direct reuse, keyed by
+   drone slug instead of login IP.
+4. **Admin-configurable alert thresholds.** Battery/camera/link-signal
+   alert conditions are hardcoded constants in `fleet_alerts`. Now that a
+   drone can report arbitrary numeric streams (Phase 9), there's no way to
+   say "alert if `thermal_cam` exceeds 60" without another code deploy. A
+   small `alert_rules` table (drone_id-or-global, stream_name, operator,
+   threshold) checked alongside the existing fixed rules would generalize
+   this to any stream a real drone actually reports.
+5. **Drone-declared stream schema.** Stale-feed detection (Phase 10) and
+   chart units only apply to a stream *after* it's reported at least once -
+   there's no way to flag "this drone was supposed to report `vibration`
+   and never has." A lightweight per-drone manifest registered at
+   provisioning time (expected stream names + units) would close that gap
+   and let ingested numeric streams get a real chart unit instead of the
+   current blank one.
+6. **Outbound alert delivery.** Every alert (low battery, degraded camera,
+   stale live feed) only ever appears inside the dashboard's own panel -
+   nobody is notified unless someone is actively looking at the page. A
+   webhook POST (or email/Slack) fired on a *new* alert - not every poll,
+   which needs some form of edge-detection/dedup state - would close the
+   loop for actual operational use rather than a monitor-required demo.
+7. **Firmware integrity verification.** `POST /api/firmware` validates
+   extension and size but not authenticity - nothing stops a bit-flipped
+   or malicious `.bin` from being "flashed" as long as it's under 8MB. A
+   required checksum (or a real signature, if firmware will ever come from
+   an untrusted supply chain) before marking a flash as applied would
+   close an obvious gap for anything beyond a demo.
+8. **Bulk drone provisioning.** `POST /api/drones` and `GET /drones.csv`
+   handle one drone and read-only export respectively; there's no CSV/bulk
+   *import* counterpart for standing up a fleet larger than a couple of
+   manually-added demo drones at once.
