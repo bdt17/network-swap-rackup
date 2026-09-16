@@ -1,6 +1,6 @@
 # cyberpunk-drone-c2 — Status & Next Steps
 
-_Last updated: 2026-09-12. Keep this file updated in place — do not create
+_Last updated: 2026-09-15. Keep this file updated in place — do not create
 timestamped copies of it, following the same convention `network-swap-app`
 (the sibling repo) settled on after getting burned by dozens of those._
 
@@ -362,6 +362,74 @@ every flash just bumped a version string regardless of what was picked.
   wrong extension, oversized file, downloading when no file was ever
   attached, blob pruning beyond the keep limit). 63 tests total, all
   passing across 3 repeated runs.
+
+## Phase 9 — Real telemetry ingestion API — DONE (2026-09-15)
+
+Phase 3's four telemetry channels (camera/link/temp/altitude) were entirely
+server-side fiction - `FleetSimulator` invented every value, and nothing let
+an actual drone (or a script standing in for one) report its own sensors.
+This phase adds a real ingestion path so a drone can push multiple, freely
+named data streams in one call and have them labeled and displayed the same
+way the simulated ones are.
+
+- **`POST /api/drones/:slug/telemetry`.** JSON body `{"streams": {"thermal_cam":
+  "42.7C", "gps_fix": "3D", ...}}` - a batch in one call, since a real drone
+  reports several sensors per cycle rather than one HTTP round-trip per
+  value. Gated by `require_admin!`, same as `/api/firmware` and
+  `/api/drones` - a configured `DRONE_API_TOKEN` lets headless hardware post
+  without a browser session. Validates the drone exists (404), `streams` is
+  a non-empty object (400), stream count (`StreamReading::MAX_STREAMS_PER_INGEST`
+  = 25), stream-name shape (`StreamReading::NAME_PATTERN`, ≤40 chars,
+  `[a-zA-Z0-9_.-]`), and value length (`MAX_VALUE_LENGTH` = 100) - real 422s
+  for any violation rather than silently accepting garbage. Each reading is
+  stored via the existing self-pruning `StreamReading.record!`, now tagged
+  `source: 'live'` (vs `'simulated'` for `FleetSimulator`'s own writes - new
+  `stream_readings.source` column, migration 010, backfills existing rows
+  as `'simulated'`).
+- **The simulator backs off a stream once real data starts arriving for
+  it.** Before this, `FleetSimulator` would have overwritten a just-posted
+  live reading on its very next tick (≤6s later), fighting any real feed.
+  `StreamReading.live?(drone_id, stream_name, within:)` checks for a recent
+  live reading; `FleetSimulator.tick!` skips faking a stream if one exists
+  within `LIVE_PREEMPT_SECONDS` (3 ticks' worth). The simulator reclaims the
+  stream on its own once the real feed goes quiet - no manual toggle needed.
+- **Labeling generalized beyond the four hardcoded names.** `stream_label`
+  (app.rb) falls back to a humanized name (`thermal_cam` → "📡 Thermal Cam")
+  for anything not in `FleetSimulator::STREAM_LABELS`/`CHART_STREAMS`, so an
+  ad-hoc stream name a real drone invents still shows up labeled instead of
+  being silently dropped. `stream_chips_html` now renders *every* stream
+  present on the drone (known ones first in their usual order, then extras
+  alphabetically), not just the simulator's fixed four - and tags a chip
+  `.stream-chip.live` (magenta accent) when its latest reading came from a
+  real POST rather than the simulator. The live/WebSocket-updated view
+  mirrors this exactly (`streamChipsHtml`/`streamLabel` in the page's own
+  JS), matching the existing "server-rendered and WS-updated must agree"
+  rule from Phase 5's alerts panel. `Drone#to_fleet_json` gained a parallel
+  `stream_sources` map alongside `streams` (name→'live'/'simulated') rather
+  than nesting source inside each stream value, so nothing that already
+  reads `streams` as plain name→value strings (alert thresholds, CSV
+  export) needed to change shape.
+- **History-page charts generalized too.** Beyond `FleetSimulator::CHART_STREAMS`'s
+  four curated entries, any other stream whose latest value looks numeric
+  (`/\A-?\d/` - a real leading number, not a status string like "OK") gets
+  its own sparkline automatically, labeled the same way as its chip. A
+  chart card is only rendered once a stream actually has readings, rather
+  than always showing four (now potentially many) permanent "not enough
+  data yet" placeholders.
+- Verified for real, not just via tests: booted the app locally, posted a
+  telemetry batch with three never-before-seen stream names
+  (`thermal_cam`/`gps_fix`/`vibration`) via `curl` with the API token,
+  confirmed they rendered labeled and tagged `stream-chip live` on the
+  dashboard, and got their own sparkline charts on the history page. Also
+  hand-verified the 422s (bad stream name, >25 streams in one request) and
+  that an unauthenticated request is bounced (redirected to login) exactly
+  like every other route.
+- 12 new tests (8 in `test/app_test.rb` covering the happy path, labeling/live
+  badge on both dashboard and history page, unknown drone, missing/invalid
+  JSON, too-many-streams, invalid name, oversized value, admin gating, and
+  token bypass; 2 in `test/fleet_simulator_test.rb` covering the
+  live-preempts-simulated behavior and its own expiry). 75 tests total, all
+  passing.
 
 ## Known gaps / candidate next steps
 

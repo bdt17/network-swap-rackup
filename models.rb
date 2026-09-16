@@ -23,15 +23,20 @@ class Drone < Sequel::Model
     StreamReading.latest_for(id)
   end
 
-  # Shape expected by the frontend's WebSocket handler: { lat:, lon:, battery:, status:, firmware: { version: }, streams: {} }
+  # Shape expected by the frontend's WebSocket handler: { lat:, lon:, battery:, status:, firmware: { version: }, streams: {}, stream_sources: {} }
+  # stream_sources is a parallel name=>'live'/'simulated' map (not nested
+  # inside streams) so existing plain-string consumers of `streams` (alert
+  # thresholds, CSV export) don't need to change shape.
   def to_fleet_json
+    streams = latest_streams
     {
       lat: lat,
       lon: lon,
       battery: battery,
       status: status,
       firmware: { version: firmware_version },
-      streams: latest_streams.transform_values { |r| r[:value] }
+      streams: streams.transform_values { |r| r[:value] },
+      stream_sources: streams.transform_values { |r| r[:source] }
     }
   end
 
@@ -78,8 +83,17 @@ class StreamReading < Sequel::Model
 
   MAX_PER_STREAM = 20
 
-  def self.record!(drone, stream_name, value)
-    create(drone_id: drone.id, stream_name: stream_name.to_s, value: value.to_s, recorded_at: Time.now)
+  # Ingestion limits for POST /api/drones/:slug/telemetry - generous enough
+  # for a real sensor payload, tight enough that one bad client can't wedge
+  # the fleet-wide broadcast or blow up storage with garbage stream names.
+  MAX_STREAMS_PER_INGEST = 25
+  MAX_NAME_LENGTH = 40
+  MAX_VALUE_LENGTH = 100
+  NAME_PATTERN = /\A[a-zA-Z0-9_.\-]{1,40}\z/
+
+  def self.record!(drone, stream_name, value, source: 'simulated')
+    create(drone_id: drone.id, stream_name: stream_name.to_s, value: value.to_s,
+           source: source, recorded_at: Time.now)
     prune!(drone.id, stream_name)
   end
 
@@ -93,13 +107,23 @@ class StreamReading < Sequel::Model
     where(drone_id: drone_id, stream_name: stream_name).exclude(id: keep_ids).delete
   end
 
-  # => { "camera" => { value:, recorded_at: }, "link_signal" => {...}, ... }
+  # => { "camera" => { value:, recorded_at:, source: }, "link_signal" => {...}, ... }
   def self.latest_for(drone_id)
     where(drone_id: drone_id)
       .reverse_order(:recorded_at)
       .all
       .group_by(&:stream_name)
-      .transform_values { |rows| { value: rows.first.value, recorded_at: rows.first.recorded_at } }
+      .transform_values { |rows| { value: rows.first.value, recorded_at: rows.first.recorded_at, source: rows.first.source } }
+  end
+
+  # Has a *live* (not simulated) reading landed for this drone+stream inside
+  # the last `within` seconds? FleetSimulator checks this before faking a
+  # tick for a stream so it doesn't fight a real drone that's actively
+  # reporting - and resumes on its own once the real feed goes quiet.
+  def self.live?(drone_id, stream_name, within:)
+    where(drone_id: drone_id, stream_name: stream_name, source: 'live')
+      .where { recorded_at > (Time.now - within) }
+      .any?
   end
 
   # Oldest-first (chart-reading order), values parsed to Float by stripping

@@ -108,14 +108,30 @@ class App < Sinatra::Base
       end
     end
 
+    # Known simulated streams get their curated emoji label; anything else -
+    # i.e. a stream name a real drone made up when it started posting
+    # telemetry - gets a humanized fallback so it still shows up labeled
+    # instead of being silently dropped from the UI.
+    def stream_label(name)
+      FleetSimulator::STREAM_LABELS[name] || FleetSimulator::CHART_STREAMS.dig(name, :label) ||
+        "📡 #{name.to_s.tr('_.-', '   ').split.map(&:capitalize).join(' ')}"
+    end
+
+    # Shows every stream currently on the drone, not just the four
+    # simulator-known ones, so a real drone's own telemetry (arbitrary
+    # names) shows up labeled here the same way. Known streams sort first,
+    # in their usual order, then any others alphabetically.
     def stream_chips_html(drone)
       streams = drone.latest_streams
       return '' if streams.empty?
 
-      chips = FleetSimulator::STREAM_LABELS.filter_map do |name, label|
-        next unless streams[name]
+      known = FleetSimulator::STREAM_LABELS.keys
+      ordered_names = known.select { |n| streams.key?(n) } + (streams.keys - known).sort
 
-        "<span class=\"stream-chip\">#{h(label)}: #{h(streams[name][:value])}</span>"
+      chips = ordered_names.map do |name|
+        reading = streams[name]
+        live = reading[:source] == 'live'
+        "<span class=\"stream-chip#{live ? ' live' : ''}\">#{h(stream_label(name))}: #{h(reading[:value])}</span>"
       end.join
       "<div class=\"streams\">#{chips}</div>"
     end
@@ -279,6 +295,7 @@ class App < Sinatra::Base
         .battery-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.75em;font-weight:bold;color:#000;text-shadow:0 0 2px rgba(255,255,255,.6)}
         .streams{margin:8px 0;display:flex;flex-wrap:wrap;gap:6px}
         .stream-chip{background:rgba(0,255,204,.15);border:1px solid rgba(0,255,204,.4);border-radius:12px;padding:2px 8px;font-size:.8em}
+        .stream-chip.live{background:rgba(255,0,255,.15);border-color:rgba(255,0,255,.6);box-shadow:0 0 6px rgba(255,0,255,.35)}
         </style>
         </head>
         <body>
@@ -297,14 +314,15 @@ class App < Sinatra::Base
         function setToken(){let t=prompt('API token (leave blank to clear):',apiToken||'');if(t===null)return;apiToken=t;localStorage.setItem('drone_api_token',t)}
         let ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/drone'+(apiToken?('?token='+encodeURIComponent(apiToken)):''));
         let streamLabels={camera:'📷 Camera',link_signal:'📶 Link',temperature:'🌡️ Temp',altitude:'📏 Altitude'};
-        function streamChipsHtml(streams){if(!streams)return'';return `<div class="streams">`+Object.keys(streamLabels).filter(k=>streams[k]).map(k=>`<span class="stream-chip">${streamLabels[k]}: ${streams[k]}</span>`).join('')+`</div>`}
+        function streamLabel(k){return streamLabels[k]||('📡 '+k.replace(/[_.-]+/g,' ').replace(/\b\w/g,c=>c.toUpperCase()))}
+        function streamChipsHtml(streams,sources){if(!streams)return'';sources=sources||{};let known=Object.keys(streamLabels).filter(k=>streams[k]);let rest=Object.keys(streams).filter(k=>!streamLabels[k]).sort();return `<div class="streams">`+known.concat(rest).map(k=>`<span class="stream-chip${sources[k]==='live'?' live':''}">${streamLabel(k)}: ${streams[k]}</span>`).join('')+`</div>`}
         function radarStatusClass(s){if(s==='ACTIVE'||s==='PATROL_AZ1'||s==='PATROL_AZ2')return'blip-active';if(s==='CHARGING')return'blip-charging';if(s==='OFFLINE')return'blip-offline';return'blip-maintenance'}
         function computeBlips(f){let entries=Object.entries(f).filter(([,d])=>d.lat!=null&&d.lon!=null);if(!entries.length)return[];let lats=entries.map(([,d])=>d.lat),lons=entries.map(([,d])=>d.lon);let centerLat=(Math.min(...lats)+Math.max(...lats))/2,centerLon=(Math.min(...lons)+Math.max(...lons))/2;let span=Math.max(Math.max(...lats)-Math.min(...lats),Math.max(...lons)-Math.min(...lons),0.02)*1.4;let radius=130;return entries.map(([slug,d])=>{let dx=(d.lon-centerLon)/span,dy=(d.lat-centerLat)/span;let x=150+dx*radius*2,y=150-dy*radius*2;let dist=Math.sqrt((x-150)**2+(y-150)**2);if(dist>radius){let angle=Math.atan2(y-150,x-150);x=150+radius*Math.cos(angle);y=150+radius*Math.sin(angle)}return{x:x.toFixed(1),y:y.toFixed(1),slug,statusClass:radarStatusClass(d.status)}})}
         function updateRadar(f){let g=document.getElementById('radar-blips');if(!g)return;g.innerHTML=computeBlips(f).map(b=>`<g class="radar-blip ${b.statusClass}"><circle cx="${b.x}" cy="${b.y}" r="6"/><text x="${Number(b.x)+10}" y="${Number(b.y)+4}">${b.slug}</text></g>`).join('')}
         function computeAlerts(f){let alerts=[];for(let slug in f){let d=f[slug],streams=d.streams||{};if(d.battery!=null&&d.battery<=15&&d.status!=='CHARGING')alerts.push(`🔋 ${slug}: battery low (${d.battery}%)`);let cam=streams.camera;if(cam==='DEGRADED'||cam==='OFFLINE')alerts.push(`📷 ${slug}: camera ${cam}`);let sig=streams.link_signal;if(sig&&parseInt(sig)<=-80)alerts.push(`📶 ${slug}: weak signal (${sig})`)}return alerts}
         function updateAlerts(f){let el=document.getElementById('fleet-alerts');if(!el)return;let alerts=computeAlerts(f);el.innerHTML=alerts.length?alerts.map(a=>`<div class="alert-row">${a}</div>`).join(''):'<div class="alert-row alert-ok">✅ All systems nominal.</div>'}
         function adminControlsHtml(i){if(!isAdmin)return'';return `<input id="fw-${i}" type="file" accept=".bin,.hex"><button class="drone-btn" onclick="uploadFirmware('${i}')">⚡ FLASH</button><button class="drone-btn danger-btn" onclick="removeDrone('${i}')">🗑 Remove</button>`}
-        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams)}${adminControlsHtml(i)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
+        function renderFleet(f){document.getElementById('fleet-count').textContent=Object.keys(f).length;updateRadar(f);updateAlerts(f);let g=document.getElementById('drone-grid');g.innerHTML='';for(let i in f){let d=f[i],b=d.battery||0,s=d.status||'UNKNOWN';g.innerHTML+=`<div class="drone-card"><h3>🚁 ${i}</h3><div>Lat/Lon: ${d.lat||0}°N, ${d.lon||0}°W</div><div class="status ${s==='ACTIVE'?'online':'offline'}">${s}</div><div class="battery"><div class="battery-fill" style="width:${b}%"></div><span class="battery-label">${b}%</span></div><div>Firmware: ${d.firmware?.version||'N/A'}</div>${streamChipsHtml(d.streams,d.stream_sources)}${adminControlsHtml(i)}<a class="drone-btn hist-link" href="/drones/${i}">📜 History</a></div>`}}
         ws.onmessage=e=>{let msg=JSON.parse(e.data);if(msg.type!=='fleet')return;renderFleet(msg.drones)};
         function uploadFirmware(id){let f=document.getElementById('fw-'+id).files[0];if(!f)return alert('Select firmware');let form=new FormData;form.append('firmware',f);form.append('drone_id',id);fetch('/api/firmware',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>alert('Flash: '+(d.status||d.error)))}
         function addDrone(){let slug=prompt('New drone id (e.g. drone-003):');if(!slug)return;let lat=prompt('Latitude:','33.45'),lon=prompt('Longitude:','-112.07');let form=new FormData;form.append('slug',slug);form.append('lat',lat);form.append('lon',lon);fetch('/api/drones',{method:'POST',headers:authHeaders(),body:form}).then(r=>r.json()).then(d=>{if(d.error)alert('Error: '+d.error)})}
@@ -348,9 +366,6 @@ class App < Sinatra::Base
     end
 
     def history_page(drone)
-      stream_label = lambda do |name|
-        FleetSimulator::STREAM_LABELS[name] || FleetSimulator::CHART_STREAMS.dig(name, :label) || name
-      end
       firmware_link = lambda do |e|
         return '' unless e.data
 
@@ -360,16 +375,27 @@ class App < Sinatra::Base
                   [e.flashed_at, "Firmware #{h(e.from_version)} → #{h(e.to_version)}#{firmware_link.call(e)}"]
                 end +
                  drone.command_events.map { |e| [e.received_at, "Command: #{h(e.raw_payload)}"] } +
-                 drone.stream_readings.map { |r| [r.recorded_at, "#{h(stream_label.call(r.stream_name))}: #{h(r.value)}"] }
+                 drone.stream_readings.map { |r| [r.recorded_at, "#{h(stream_label(r.stream_name))}: #{h(r.value)}"] }
                ).sort_by { |t, _| t }.reverse.first(50)
 
       rows = events.map { |t, desc| "<div class=\"event-row\"><span class=\"event-time\">#{h(t)}</span> #{desc}</div>" }.join
       rows = '<div class="event-row">No history yet.</div>' if events.empty?
 
-      charts = FleetSimulator::CHART_STREAMS.map do |name, meta|
+      # Known simulated streams always get a chart (curated unit label);
+      # any other stream a real drone has posted gets one too as long as its
+      # latest value actually looks numeric (`-12.3`, not a status string
+      # like "OK") - so ad-hoc ingested telemetry shows up charted without
+      # needing to be registered anywhere first.
+      known = FleetSimulator::CHART_STREAMS
+      extra = drone.latest_streams.select { |name, r| !known.key?(name) && r[:value].to_s =~ /\A-?\d/ }.keys.sort
+      chart_streams = known.merge(extra.to_h { |name| [name, { label: stream_label(name), unit: '' }] })
+
+      charts = chart_streams.map do |name, meta|
         history = StreamReading.numeric_history_for(drone.id, name)
+        next if history.empty?
+
         "<div class=\"chart-card\"><h4>#{h(meta[:label])}</h4>#{sparkline_svg(history, unit: meta[:unit])}</div>"
-      end.join
+      end.compact.join
 
       <<~HTML
         <!DOCTYPE html>
@@ -575,6 +601,47 @@ class App < Sinatra::Base
     broadcast_fleet!
 
     { status: 'deleted', drone: params['slug'] }.to_json
+  end
+
+  # Real telemetry ingestion - lets an actual drone (or a script standing in
+  # for one) push its own labeled sensor readings, distinct from the four
+  # channels FleetSimulator fakes. Body: { "streams": { "thermal_cam": "42C",
+  # "gps_fix": "3D", ... } } - a batch in one call since a real drone reports
+  # several sensors at once, not one HTTP round-trip per value. Gated the
+  # same way as /api/firmware: DRONE_API_TOKEN lets a headless script post
+  # without a browser session; a logged-in viewer is still blocked.
+  post '/api/drones/:slug/telemetry' do
+    content_type :json
+    require_admin!
+    drone = Drone.first(slug: params['slug'])
+    halt 404, { error: 'Unknown drone' }.to_json unless drone
+
+    begin
+      payload = JSON.parse(request.body.read)
+    rescue JSON::ParserError
+      halt 400, { error: 'Invalid JSON body' }.to_json
+    end
+
+    streams = payload['streams']
+    halt 400, { error: 'Missing or empty "streams" object' }.to_json unless streams.is_a?(Hash) && !streams.empty?
+    if streams.size > StreamReading::MAX_STREAMS_PER_INGEST
+      halt 422, { error: "At most #{StreamReading::MAX_STREAMS_PER_INGEST} streams per request" }.to_json
+    end
+
+    streams.each do |name, value|
+      unless name.to_s.match?(StreamReading::NAME_PATTERN)
+        halt 422, { error: "Invalid stream name #{name.to_s.inspect} - must be 1-#{StreamReading::MAX_NAME_LENGTH} " \
+                            'chars of letters/digits/underscore/dot/dash' }.to_json
+      end
+      if value.to_s.length > StreamReading::MAX_VALUE_LENGTH
+        halt 422, { error: "Value for #{name} exceeds #{StreamReading::MAX_VALUE_LENGTH} characters" }.to_json
+      end
+    end
+
+    streams.each { |name, value| StreamReading.record!(drone, name, value, source: 'live') }
+    broadcast_fleet!
+
+    { status: 'recorded', drone: drone.slug, streams: streams.keys }.to_json
   end
 
   # Sinatra runs this for *every* response that ends up with a 404 status -

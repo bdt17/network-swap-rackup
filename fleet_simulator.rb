@@ -28,6 +28,13 @@ module FleetSimulator
   DRIFT = 0.01
   LOW_BATTERY = 15
 
+  # A stream with a live (really-ingested) reading younger than this
+  # preempts the simulator faking that same stream name, so a real drone
+  # posting telemetry via POST /api/drones/:slug/telemetry doesn't get its
+  # values immediately overwritten by the next simulator tick. Three ticks'
+  # worth of quiet and the simulator reclaims the stream on its own.
+  LIVE_PREEMPT_SECONDS = TICK_SECONDS * 3
+
   # Named telemetry channels distinct from the drone's core state
   # (lat/lon/battery/status, which live on the drones table directly). Each
   # is labeled and displayed separately on the dashboard and history page.
@@ -95,6 +102,8 @@ module FleetSimulator
       end
 
       stream_updates_for(drone).each do |name, value|
+        next if StreamReading.live?(drone.id, name, within: LIVE_PREEMPT_SECONDS)
+
         StreamReading.record!(drone, name, value)
         changed = true
       end

@@ -324,6 +324,96 @@ class AppTest < Minitest::Test
     assert_includes last_response.body, '120m'
   end
 
+  def test_telemetry_ingest_records_multiple_labeled_streams
+    post '/api/drones/drone-001/telemetry', { streams: { 'thermal_cam' => '38.5C', 'gps_fix' => '3D' } }.to_json,
+         { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 200, last_response.status
+    body = JSON.parse(last_response.body)
+    assert_equal 'recorded', body['status']
+    assert_equal %w[thermal_cam gps_fix], body['streams']
+
+    drone = Drone.first(slug: 'drone-001')
+    streams = drone.latest_streams
+    assert_equal '38.5C', streams['thermal_cam'][:value]
+    assert_equal 'live', streams['thermal_cam'][:source]
+  end
+
+  def test_telemetry_ingest_shows_up_labeled_on_dashboard_and_history
+    post '/api/drones/drone-001/telemetry', { streams: { 'thermal_cam' => '38.5C' } }.to_json,
+         { 'CONTENT_TYPE' => 'application/json' }
+    assert_equal 200, last_response.status
+
+    get '/'
+    assert_includes last_response.body, 'Thermal Cam'
+    assert_includes last_response.body, '38.5C'
+    assert_includes last_response.body, 'stream-chip live'
+
+    get '/drones/drone-001'
+    assert_includes last_response.body, 'Thermal Cam'
+  end
+
+  def test_telemetry_ingest_404s_for_unknown_drone
+    post '/api/drones/does-not-exist/telemetry', { streams: { 'x' => '1' } }.to_json,
+         { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 404, last_response.status
+  end
+
+  def test_telemetry_ingest_rejects_missing_streams
+    post '/api/drones/drone-001/telemetry', {}.to_json, { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 400, last_response.status
+  end
+
+  def test_telemetry_ingest_rejects_invalid_json
+    post '/api/drones/drone-001/telemetry', 'not json', { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 400, last_response.status
+  end
+
+  def test_telemetry_ingest_rejects_too_many_streams
+    streams = (1..StreamReading::MAX_STREAMS_PER_INGEST + 1).to_h { |i| ["s#{i}", '1'] }
+    post '/api/drones/drone-001/telemetry', { streams: streams }.to_json, { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 422, last_response.status
+  end
+
+  def test_telemetry_ingest_rejects_invalid_stream_name
+    post '/api/drones/drone-001/telemetry', { streams: { 'bad name!' => '1' } }.to_json,
+         { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 422, last_response.status
+  end
+
+  def test_telemetry_ingest_rejects_oversized_value
+    long_value = '1' * (StreamReading::MAX_VALUE_LENGTH + 1)
+    post '/api/drones/drone-001/telemetry', { streams: { 'x' => long_value } }.to_json,
+         { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 422, last_response.status
+  end
+
+  def test_telemetry_ingest_requires_admin
+    session = viewer_session
+    session.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,
+                 { 'CONTENT_TYPE' => 'application/json' }
+
+    assert_equal 403, session.last_response.status
+  end
+
+  def test_telemetry_ingest_via_api_token_without_login
+    logged_out = Rack::Test::Session.new(Rack::MockSession.new(App))
+    ENV['DRONE_API_TOKEN'] = 'sekrit'
+    begin
+      logged_out.post '/api/drones/drone-001/telemetry', { streams: { 'x' => '1' } }.to_json,
+                       { 'CONTENT_TYPE' => 'application/json', 'HTTP_X_DRONE_TOKEN' => 'sekrit' }
+      assert_equal 200, logged_out.last_response.status
+    ensure
+      ENV.delete('DRONE_API_TOKEN')
+    end
+  end
+
   def test_history_page_404s_for_unknown_drone
     get '/drones/does-not-exist'
 

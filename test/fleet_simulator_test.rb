@@ -71,6 +71,34 @@ class FleetSimulatorTest < Minitest::Test
     assert_includes FleetSimulator::STREAM_LABELS.keys, latest.keys.first
   end
 
+  def test_tick_skips_a_stream_with_a_recent_live_reading
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'camera', 'LIVE-VALUE', source: 'live')
+    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+
+    FleetSimulator.tick_if_due! {}
+
+    latest = drone.latest_streams
+    assert_equal 'LIVE-VALUE', latest['camera'][:value]
+    assert_equal 'live', latest['camera'][:source]
+    # The other simulated streams still tick normally - only the live one is preempted.
+    refute_nil latest['link_signal']
+    assert_equal 'simulated', latest['link_signal'][:source]
+  end
+
+  def test_tick_resumes_simulating_once_the_live_reading_goes_stale
+    drone = Drone.first(slug: 'drone-001')
+    StreamReading.record!(drone, 'camera', 'STALE-VALUE', source: 'live')
+    StreamReading.where(drone_id: drone.id, stream_name: 'camera')
+                 .update(recorded_at: Time.now - FleetSimulator::LIVE_PREEMPT_SECONDS - 1)
+    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+
+    FleetSimulator.tick_if_due! {}
+
+    latest = drone.latest_streams
+    assert_equal 'simulated', latest['camera'][:source]
+  end
+
   def test_tick_if_due_mutates_state_and_broadcasts_once_then_waits
     broadcasts = 0
     FleetSimulator.instance_variable_set(:@next_tick_at, nil)
