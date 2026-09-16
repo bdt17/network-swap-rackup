@@ -211,3 +211,35 @@ class BackupCode < Sequel::Model
     Digest::SHA256.hexdigest(code.to_s.strip.downcase)
   end
 end
+
+# Backs RateLimiter across multiple app instances - see rate_limiter.rb.
+# One row per attempt; a bucket+key's stale rows are pruned lazily on that
+# same key's next check, same as the in-memory version this replaced.
+class RateLimitHit < Sequel::Model
+end
+
+# A tiny shared key-value table coordinating state across multiple app
+# instances - see db/migrations/013_create_cluster_state.rb for the two
+# rows this holds and why, and NEXT_STEPS.md's former "single-instance
+# only" gap for the fuller picture.
+class ClusterState < Sequel::Model(:cluster_state)
+  def self.get(key)
+    self[key.to_s]&.value
+  end
+
+  def self.set!(key, value)
+    where(key: key.to_s).update(value: value.to_s, updated_at: Time.now)
+  end
+
+  # Atomically claims a "due at" slot: true only if `now` is at/after the
+  # currently-recorded value, in which case it's immediately advanced by
+  # `advance_by` seconds - so exactly one instance (whichever's UPDATE
+  # lands first) claims a given slot, not one per running instance. A
+  # single UPDATE ... WHERE is already atomic on its own in both Postgres
+  # and SQLite, so no explicit transaction or row lock is needed here.
+  def self.claim_due!(key, now:, advance_by:)
+    where(key: key.to_s)
+      .where { value <= now.utc.iso8601 }
+      .update(value: (now + advance_by).utc.iso8601, updated_at: now) == 1
+  end
+end

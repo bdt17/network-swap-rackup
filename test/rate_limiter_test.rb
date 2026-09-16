@@ -33,10 +33,19 @@ class RateLimiterTest < Minitest::Test
   end
 
   def test_old_attempts_outside_the_window_do_not_count
-    key = %i[login old-ip]
-    hits = RateLimiter.instance_variable_get(:@hits)
-    hits[key] = Array.new(10) { Time.now - 200 } # older than the 180s window
+    10.times do
+      RateLimitHit.create(bucket: 'login', key: 'old-ip', occurred_at: Time.now - 200) # older than the 180s window
+    end
 
     refute RateLimiter.exceeded?(:login, 'old-ip')
+  end
+
+  def test_a_different_processs_hits_still_count_towards_the_same_limit
+    # Simulates another instance's attempts by writing rows directly,
+    # bypassing this process's own RateLimiter.exceeded? entirely - the
+    # whole point of moving this to the DB is that it's still seen here.
+    10.times { RateLimitHit.create(bucket: 'login', key: 'shared-ip', occurred_at: Time.now) }
+
+    assert RateLimiter.exceeded?(:login, 'shared-ip')
   end
 end

@@ -41,13 +41,37 @@ class App < Sinatra::Base
 
   before do
     REQUEST_COUNT.increment!
+    self.class.relay_remote_broadcasts!
     FleetSimulator.tick_if_due! { self.class.broadcast_fleet! } if defined?(FleetSimulator)
   end
 
-  # Broadcasts are also triggered from FleetSimulator, which runs on a plain
-  # background Thread with no request/instance context - so this has to be
-  # callable as a class method, not just a route helper.
+  # Broadcasts are also triggered from FleetSimulator's tick, which runs
+  # from this same `before` filter but outside any one route's own
+  # instance context - so this has to be callable as a class method, not
+  # just a route helper.
+  #
+  # Multi-instance: `sockets` only ever holds WebSocket connections open on
+  # *this* process - a mutation handled by a different instance wouldn't
+  # reach them without help. broadcast_fleet! records a shared "something
+  # changed" marker in cluster_state (ClusterState) in addition to pushing
+  # to its own local sockets immediately; every instance's own `before`
+  # filter (relay_remote_broadcasts!, below) notices that marker moved on
+  # its own next incoming request and relays to its own local sockets too.
+  # This is the same opportunistic-polling-off-real-traffic pattern
+  # FleetSimulator's tick already relies on (see fleet_simulator.rb) rather
+  # than a blocking pub/sub subscriber thread, since a persistent
+  # background thread is known to die within seconds in this hosting
+  # environment (see NEXT_STEPS.md Phase 3) - so cross-instance delivery
+  # has the same small, accepted latency as the simulator's own ticks,
+  # bounded by how often each instance happens to receive a request.
   def self.broadcast_fleet!
+    marker = Time.now.utc.iso8601
+    ClusterState.set!('fleet_last_changed_at', marker)
+    @last_relayed_marker = marker
+    push_to_local_sockets!
+  end
+
+  def self.push_to_local_sockets!
     payload = { type: 'fleet', drones: Drone.fleet_hash }.to_json
     sockets.each do |socket|
       socket.send(payload)
@@ -55,6 +79,19 @@ class App < Sinatra::Base
       warn "WS broadcast failed, dropping socket: #{e.message}"
       sockets.delete(socket)
     end
+  end
+
+  # Checked on every request (cheap: one indexed single-row lookup). Skips
+  # entirely once this instance has already relayed the current marker -
+  # in particular, the instance that itself just called broadcast_fleet!
+  # already pushed to its own sockets and recorded that marker as relayed,
+  # so this is a no-op there and only does real work on *other* instances.
+  def self.relay_remote_broadcasts!
+    marker = ClusterState.get('fleet_last_changed_at')
+    return if marker.nil? || marker == @last_relayed_marker
+
+    @last_relayed_marker = marker
+    push_to_local_sockets!
   end
 
   helpers do

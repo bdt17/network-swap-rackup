@@ -4,6 +4,13 @@ require_relative '../fleet_simulator'
 class FleetSimulatorTest < Minitest::Test
   include DroneTestHelpers
 
+  # Forces the shared cluster_state row into "due now" - the multi-instance
+  # replacement for what used to be
+  # `FleetSimulator.instance_variable_set(:@next_tick_at, nil)`.
+  def force_tick_due!
+    ClusterState.set!('simulator_next_tick_at', (Time.now - 1).utc.iso8601)
+  end
+
   def test_next_state_for_charging_drone_recharges
     drone = Drone.new(status: 'CHARGING', battery: 90, lat: 1.0, lon: 2.0)
     changes = FleetSimulator.next_state_for(drone)
@@ -57,10 +64,9 @@ class FleetSimulatorTest < Minitest::Test
 
   def test_tick_records_stream_readings_and_prunes_old_ones
     drone = Drone.first(slug: 'drone-001')
-    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
 
     (StreamReading::MAX_PER_STREAM + 5).times do
-      FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+      force_tick_due!
       FleetSimulator.tick_if_due! {}
     end
 
@@ -74,7 +80,7 @@ class FleetSimulatorTest < Minitest::Test
   def test_tick_skips_a_stream_with_a_recent_live_reading
     drone = Drone.first(slug: 'drone-001')
     StreamReading.record!(drone, 'camera', 'LIVE-VALUE', source: 'live')
-    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+    force_tick_due!
 
     FleetSimulator.tick_if_due! {}
 
@@ -91,7 +97,7 @@ class FleetSimulatorTest < Minitest::Test
     StreamReading.record!(drone, 'camera', 'STALE-VALUE', source: 'live')
     StreamReading.where(drone_id: drone.id, stream_name: 'camera')
                  .update(recorded_at: Time.now - FleetSimulator::LIVE_PREEMPT_SECONDS - 1)
-    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+    force_tick_due!
 
     FleetSimulator.tick_if_due! {}
 
@@ -101,7 +107,7 @@ class FleetSimulatorTest < Minitest::Test
 
   def test_tick_if_due_mutates_state_and_broadcasts_once_then_waits
     broadcasts = 0
-    FleetSimulator.instance_variable_set(:@next_tick_at, nil)
+    force_tick_due!
 
     before_battery = Drone.first(slug: 'drone-001').battery
     FleetSimulator.tick_if_due! { broadcasts += 1 }

@@ -19,10 +19,13 @@ require_relative 'models'
 # own health-check polling alone is frequent enough to keep this ticking
 # even with no dashboard open. See NEXT_STEPS.md.
 #
-# Single-process only: `@next_tick_at` is in-memory, so two instances would
-# each tick independently and drive the same drones. Fine for the current
-# single-instance deployment; would need a coordinator (e.g. a DB-backed
-# lock) the moment this runs on more than one instance.
+# Multi-instance safe: the "is a tick due" gate lives in the cluster_state
+# table (ClusterState.claim_due!, a single atomic conditional UPDATE), not
+# in an in-memory instance variable - so with N running instances, each one
+# still opportunistically checks on every request it happens to receive,
+# but only whichever one's UPDATE lands first for a given slot actually
+# runs that tick. The rest see 0 rows affected and back off, exactly as if
+# they weren't due. See NEXT_STEPS.md.
 module FleetSimulator
   TICK_SECONDS = Integer(ENV['SIMULATOR_TICK_SECONDS'] || 6)
   DRIFT = 0.01
@@ -60,28 +63,27 @@ module FleetSimulator
   @tick_count = 0
   @last_tick_at = nil
   @last_error = nil
-  @next_tick_at = nil
 
   def self.status
     {
-      tick_count: @tick_count,
+      tick_count: @tick_count, # ticks *this instance* has personally run
       last_tick_at: @last_tick_at&.iso8601,
-      next_tick_at: @next_tick_at&.iso8601,
+      next_tick_at: ClusterState.get('simulator_next_tick_at'), # cluster-wide
       last_error: @last_error
     }
   end
 
-  # Called from App's `before` filter on every request. Non-blocking: if
-  # another request is already mid-tick, this just returns rather than
-  # queuing behind it, so a tick can never add latency to unrelated requests.
+  # Called from App's `before` filter on every request. @mutex is a cheap
+  # per-process guard so concurrent request threads on the *same* instance
+  # don't all hit the DB to ask the same question; ClusterState.claim_due!
+  # is the actual cross-instance source of truth for whether this call is
+  # the one that gets to run the tick.
   def self.tick_if_due!(&broadcaster)
     return unless @mutex.try_lock
 
     begin
-      now = Time.now
-      return if @next_tick_at && now < @next_tick_at
+      return unless ClusterState.claim_due!('simulator_next_tick_at', now: Time.now, advance_by: TICK_SECONDS)
 
-      @next_tick_at = now + TICK_SECONDS
       tick!(&broadcaster)
     ensure
       @mutex.unlock

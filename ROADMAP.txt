@@ -3,11 +3,13 @@ cyberpunk-drone-c2 — candidate future phases
 under "Known gaps / candidate next steps" — keep both in sync if this
 list changes)
 
-1. Single-instance only
-   settings.sockets (WebSocket broadcast), FleetSimulator's tick gate, and
-   RateLimiter are all in-memory - only correct on exactly one running
-   instance. Would need Redis or Postgres LISTEN/NOTIFY to run on more
-   than one instance.
+1. Single-instance only — DONE, Phase 13 (2026-09-16)
+   All three (WebSocket broadcast, simulator tick gate, RateLimiter) now
+   coordinate via a shared cluster_state table + DB-backed rate_limit_hits,
+   using atomic conditional UPDATEs and request-driven polling - no
+   background thread (those reliably die in this hosting env, see Phase 3).
+   Verified with two real local server processes sharing one Postgres DB.
+   See NEXT_STEPS.md.
 
 2. Per-drone ingestion credentials — DONE, Phase 12 (2026-09-16)
    drones.token_digest + POST .../rotate_token + DELETE .../token. Scoped

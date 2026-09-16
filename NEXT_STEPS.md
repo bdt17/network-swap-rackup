@@ -562,17 +562,117 @@ posting for the drone it was meant for.
   to one drone's telemetry only, confirming no fleet-wide admin access,
   revoke disabling the token). 87 tests total, all passing.
 
+## Phase 13 — Multi-instance support — DONE (2026-09-16)
+
+Item 1 off the candidate list, and the last of the three deliberately-
+deferred items - closes the "single-instance only" gap flagged since
+Phase 8. All three in-memory mechanisms (`settings.sockets`' broadcast
+reach, `FleetSimulator`'s tick gate, `RateLimiter`) only ever saw state
+from the one process they ran in; with more than one instance behind a
+load balancer, each would silently do its own separate thing - duplicate
+simulator ticks draining batteries too fast, a WebSocket viewer on
+instance B never seeing a mutation that happened to land on instance A,
+and `RateLimiter` allowing up to the limit *per instance* instead of
+fleet-wide. The app currently runs as exactly one instance on Render's
+free plan, so none of this was reachable in production today - but the
+code no longer assumes it stays that way.
+
+**The hard constraint this had to design around:** Phase 3 already proved
+a persistent background Thread reliably gets killed within seconds in this
+specific hosting environment, for reasons invisible to Ruby itself -
+that's the entire reason `FleetSimulator` runs off opportunistic
+per-request polling instead of a thread ticking on its own schedule. A
+naive multi-instance design (e.g. Postgres `LISTEN`/`NOTIFY` with a
+blocking subscriber thread per instance) would almost certainly hit the
+exact same failure mode. Everything below deliberately avoids any
+long-lived background thread or blocking wait, sticking to the same
+"opportunistic work off real request traffic" pattern already proven
+reliable here.
+
+- **New `cluster_state` table** (migration 013): a tiny shared key-value
+  table, two known rows only (not a general-purpose store):
+  - `fleet_last_changed_at` - a timestamp marker any instance can check
+    to know "has fleet state changed since I last relayed it."
+  - `simulator_next_tick_at` - the shared "when's the next tick due" gate,
+    replacing `FleetSimulator`'s old in-memory `@next_tick_at`.
+  Both rows are seeded directly in the migration so runtime code never has
+  to distinguish "row missing" from "not due yet."
+- **`ClusterState.claim_due!`** (models.rb): a single atomic conditional
+  `UPDATE ... WHERE value <= now` - no explicit transaction or row lock
+  needed, since one UPDATE statement is already atomic on its own in both
+  Postgres and SQLite. Returns true only for whichever instance's UPDATE
+  actually lands first for a given slot; every other instance (or thread)
+  checking the same slot sees 0 rows affected and correctly backs off.
+  `FleetSimulator.tick_if_due!` now claims via this instead of comparing
+  against its own in-memory `@next_tick_at` - so with N instances, exactly
+  one of them runs a given tick, not one per instance. `@tick_count`/
+  `@last_tick_at` stay per-instance (useful on `/health` as "is *this*
+  instance pulling its weight"); `next_tick_at` in `/health` now reads the
+  shared cluster-wide value instead.
+- **Cross-instance WebSocket relay, via polling instead of pub/sub.**
+  `App.broadcast_fleet!` now does two things: pushes to its own locally-
+  connected sockets immediately (unchanged), and records `Time.now` into
+  `fleet_last_changed_at`. Every instance's global `before` filter calls
+  the new `relay_remote_broadcasts!` on every incoming request (one cheap
+  indexed single-row `SELECT`) - if the marker has moved since that
+  instance last relayed it, it pushes to its own local sockets too. The
+  originating instance recognizes its own marker as already-relayed and
+  skips the redundant re-push. This means cross-instance delivery has the
+  same small, accepted latency as the simulator's own ticks - bounded by
+  how often each instance happens to receive a request - rather than true
+  instant push, which is the direct tradeoff for not using a blocking
+  subscriber thread.
+- **`RateLimiter` moved off its in-memory `@hits` Hash onto a new
+  `rate_limit_hits` table** (migration 012, `RateLimitHit` model) - an
+  in-memory counter only ever saw attempts that landed on that exact
+  process, so two instances behind a load balancer would each
+  independently allow up to the limit (effectively doubling it, or more,
+  with more instances). Same lazy per-key pruning behavior as before
+  (a bucket+key's stale rows are deleted on that same key's next check),
+  just DB-backed now. A per-process `Mutex` is kept around the check+insert
+  purely to narrow (not eliminate) a same-instance race between two
+  concurrent requests; it can't do anything about a simultaneous request
+  on a *different* instance, which is an accepted, minor over-count risk
+  at this app's scale - the same "good enough, not bulletproof" bar
+  `client_ip`'s own comment already sets.
+- Verified for real, not just via unit tests - and specifically against
+  **two separate local server processes on different ports sharing one
+  real local Postgres database** (matching production's adapter, not the
+  sqlite fallback), since none of this is meaningfully testable within a
+  single process:
+  - `/health` on both instances immediately after boot showed instance A
+    had ticked (`tick_count: 1`) and instance B correctly had not
+    (`tick_count: 0`), both agreeing on the same shared `next_tick_at` -
+    confirming exactly-once tick claiming across processes.
+  - A real `faye-websocket` client connected to *each* instance; a
+    firmware flash POSTed only to instance A was received by *both*
+    clients - instance A's client immediately, instance B's client only
+    after a follow-up request was sent to instance B (proving the
+    relay-on-next-request design, not a lucky coincidence).
+  - 11 bad login attempts split 6-against-instance-A/5-against-instance-B
+    (shared limit: 10/3min) - the 10th (B's 4th) still came back 401, the
+    11th (B's 5th) came back a real 429, confirming the rate limit is
+    genuinely shared rather than reset per instance.
+  - Full suite also run against real local Postgres directly (not just
+    the two-instance setup) to confirm the new `ClusterState.claim_due!`
+    virtual-row comparison generates correct SQL on both adapters, not
+    only sqlite.
+- 2 existing test files updated for the new coordination mechanism
+  (`fleet_simulator_test.rb`'s `instance_variable_set(:@next_tick_at,
+  nil)` calls replaced with a `force_tick_due!` helper that sets the
+  shared `cluster_state` row instead; `rate_limiter_test.rb`'s direct
+  `@hits` Hash manipulation replaced with real `RateLimitHit` rows). 1 new
+  test (`rate_limiter_test.rb`: hits written directly to the table, as if
+  by a different process, still count toward the same limit). 88 tests
+  total, all passing (checked 4 repeated runs against sqlite plus one full
+  run against real Postgres).
+
 ## Known gaps / candidate next steps
 
 Roughly in order of likely value — none of these are blocking; the app is a
 working live-ish demo dashboard with real login and telemetry as it stands.
 
-1. **Single-instance only.** `settings.sockets` (WebSocket broadcast),
-   `FleetSimulator`'s tick gate, and `RateLimiter` are all in-memory — only
-   work correctly on exactly one running instance. Fine for the current
-   single-instance Render deploy; would need a shared store (Redis, or
-   Postgres `LISTEN`/`NOTIFY` for broadcast) the moment this runs on more
-   than one instance.
+~~1. Single-instance only~~ — **done, Phase 13.**
 ~~2. Per-drone ingestion credentials~~ — **done, Phase 12.**
 ~~3. Rate-limit telemetry ingestion~~ — **done, Phase 11.**
 4. **Admin-configurable alert thresholds.** Battery/camera/link-signal
